@@ -64,3 +64,9 @@ MONGODB_DATABASE_NAME = get_env("MONGODB_DATABASE_NAME", "scibot")
 
 # ── Postgres store ────────────────────────────────────────────────────────────
 POSTGRES_CONNECTION_STRING = get_env("POSTGRES_CONNECTION_STRING")
+
+# ── External research APIs ────────────────────────────────────────────────────
+# Semantic Scholar — optional; unlocks 100 req/s (vs 1 req/s anonymous)
+SEMANTIC_SCHOLAR_API_KEY = get_env("SEMANTIC_SCHOLAR_API_KEY")
+# NCBI/PubMed — optional; unlocks 10 req/s (vs 3 req/s anonymous)
+NCBI_API_KEY = get_env("NCBI_API_KEY")

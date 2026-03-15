@@ -365,7 +365,7 @@ def get_llm(config: dict[str, Any] | None = None) -> Any:
             "model": model,
             "temperature": temperature,
             "max_output_tokens": max_tokens,
-            "google_api_key": cfg.get("api_key") or GOOGLE_API_KEY,
+            "api_key": cfg.get("api_key") or GOOGLE_API_KEY,
             "streaming": streaming,
         }
         if cfg.get("vertex_project"):
