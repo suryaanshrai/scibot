@@ -71,6 +71,12 @@ SEMANTIC_SCHOLAR_API_KEY = get_env("SEMANTIC_SCHOLAR_API_KEY")
 # NCBI/PubMed — optional; unlocks 10 req/s (vs 3 req/s anonymous)
 NCBI_API_KEY = get_env("NCBI_API_KEY")
 
+# ── Web search ───────────────────────────────────────────────────────────────
+# Tavily — optional; preferred search backend when key is present
+TAVILY_API_KEY = get_env("TAVILY_API_KEY")
+# SerpAPI — optional; secondary search backend
+SERPAPI_API_KEY = get_env("SERPAPI_API_KEY")
+
 # ── GitHub ────────────────────────────────────────────────────────────────────
 # GitHub personal access token — required by GithubFileLoader
 GITHUB_TOKEN = get_env("GITHUB_TOKEN")

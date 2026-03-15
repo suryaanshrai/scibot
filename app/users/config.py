@@ -56,6 +56,7 @@ class UserConfig(TypedDict, total=False):
     store: dict
     external_keys: dict
     data_source_creds: dict  # {alias: {"type": "postgres"|"mongodb", "connection_string": "...", ...}}
+    search: dict             # {"tool": "tavily"|"serp"|"duckduckgo", "whitelist_extra": ["example.com"]}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
