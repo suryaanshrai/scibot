@@ -208,6 +208,13 @@ def get_store(
     if provider == "chroma":
         from langchain_chroma import Chroma
 
+        # distance_function is baked into the HNSW index at collection-creation
+        # time.  Valid values: "cosine" (default), "l2", "ip".
+        # Changing this after the collection has already been ingested has no
+        # effect without calling delete_collection_vectors() + re-ingesting.
+        distance_function = (cfg.get("distance_function") or "cosine").lower()
+        collection_metadata = {"hnsw:space": distance_function}
+
         chroma_host = cfg.get("chroma_host") or CHROMA_HOST
         if chroma_host:
             import chromadb
@@ -218,6 +225,7 @@ def get_store(
                 client=client,
                 collection_name=collection_name,
                 embedding_function=embedding,
+                collection_metadata=collection_metadata,
                 **extra_kwargs,
             )
 
@@ -226,6 +234,7 @@ def get_store(
             collection_name=collection_name,
             embedding_function=embedding,
             persist_directory=persist_dir or None,
+            collection_metadata=collection_metadata,
             **extra_kwargs,
         )
 
@@ -264,6 +273,16 @@ def get_store(
         else:
             client = QdrantClient(":memory:")
 
+        # Note: QdrantVectorStore does not auto-create the Qdrant collection.
+        # To use a non-default distance metric, pre-create the collection
+        # before constructing this store:
+        #   from qdrant_client.http.models import Distance, VectorParams
+        #   client.create_collection(
+        #       collection_name=collection_name,
+        #       vectors_config=VectorParams(size=<dim>, distance=Distance.COSINE),
+        #   )
+        # Pass any extra QdrantVectorStore constructor kwargs via
+        # config["extra_kwargs"].
         return QdrantVectorStore(
             client=client,
             collection_name=collection_name,

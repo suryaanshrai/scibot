@@ -17,6 +17,30 @@ Document storage layout
 Each file contains exactly one ``langchain_core.documents.Document`` object.
 The sequential numbering allows safe appending via ``update_collection``.
 
+Source-level tracking fields (added to every source entry in DB)
+----------------------------------------------------------------
+Every source entry now carries three extra fields set by this module:
+
+``source_id``   — stable, human-readable identifier for the source, used by
+                  the ingestion layer to target per-source vector operations:
+                    papers    → "arxiv:1706.03762" | "pubmed:12345678"
+                               | "pdf:/abs/path/file.pdf" | "latex:…" | "markdown:…"
+                    youtube   → "youtube:https://youtu.be/…"
+                    github    → "github:https://github.com/owner/repo"
+                    webpages  → "webpage:https://example.com/article"
+                    videos    → "video:/abs/path/lecture.mp4"
+                    audios    → "audio:/abs/path/talk.mp3"
+                    images    → "image:/abs/path/figure.png"
+
+``doc_paths``   — list of absolute paths to the pickle files for this source,
+                  in insertion order.  Allows the ingestion layer to load
+                  only the documents for a specific source without scanning
+                  the whole directory.
+
+``ingested_at`` — ISO-8601 UTC timestamp set by ``app.storage.ingestion``
+                  after the source's vectors are written to the store.
+                  ``null`` means the source has not been ingested yet.
+
 Collection data dict (stored in DB)
 -------------------------------------
 {
@@ -28,6 +52,7 @@ Collection data dict (stored in DB)
     "papers": [
         {
             "source_type":      "arxiv",
+            "source_id":        "arxiv:1706.03762",
             "source_url":       "https://arxiv.org/abs/1706.03762",
             "title":            "Attention Is All You Need",
             "authors":          ["Vaswani", "..."],
@@ -35,6 +60,8 @@ Collection data dict (stored in DB)
             "fetch_references": true,
             "reference_depth":  2,
             "reference_top_n":  10,
+            "doc_paths":        ["/…/doc_0001.pkl"],
+            "ingested_at":      null,
             "references": [
                 {
                     "id":            "1502.03167",
@@ -51,12 +78,15 @@ Collection data dict (stored in DB)
     "youtube": [
         {
             "url":            "https://youtu.be/dQw4w9WgXcQ",
+            "source_id":      "youtube:https://youtu.be/dQw4w9WgXcQ",
             "title":          "Rick Astley - Never Gonna Give You Up",
             "is_playlist":    false,
             "playlist_url":   null,
             "author":         "Rick Astley",
             "length_seconds": 213,
-            "publish_date":   "2009-10-25"
+            "publish_date":   "2009-10-25",
+            "doc_paths":      ["/…/doc_0002.pkl"],
+            "ingested_at":    null
         }
     ],
 
@@ -90,13 +120,15 @@ import re as _re
 import shutil
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Required, TypedDict
+from typing import Any, Required, TypedDict
 
 from langchain_core.documents import Document
 
 from app.sources.base import resolve_data_dir
+from app.sources.dynamic_data import DynamicDataSourceConfig, load_dynamic_source
 from app.users.collections_db import (
     delete_collection_record,
     list_collections as _db_list_collections,
@@ -155,13 +187,14 @@ class ImageSourceConfig(TypedDict, total=False):
 
 class CollectionSources(TypedDict, total=False):
     """Full set of sources to include in a collection."""
-    papers:   list[PaperSource]
-    youtube:  list[YoutubeSourceConfig]
-    github:   list[GithubSourceConfig]
-    webpages: list[WebSourceConfig]
-    videos:   list[VideoSourceConfig]
-    audios:   list[AudioSourceConfig]
-    images:   list[ImageSourceConfig]
+    papers:          list[PaperSource]
+    youtube:         list[YoutubeSourceConfig]
+    github:          list[GithubSourceConfig]
+    webpages:        list[WebSourceConfig]
+    videos:          list[VideoSourceConfig]
+    audios:          list[AudioSourceConfig]
+    images:          list[ImageSourceConfig]
+    dynamic_sources: list[DynamicDataSourceConfig]
 
 
 class CollectionResult(TypedDict):
@@ -238,6 +271,63 @@ def _existing_doc_count(docs_dir: Path) -> int:
     return len(list(docs_dir.glob("doc_*.pkl")))
 
 
+# ── Source-ID helpers ─────────────────────────────────────────────────────────
+
+_ARXIV_ID_FROM_URL = _re.compile(
+    r"(?:arxiv\.org/(?:abs|pdf)/|arxiv:)"
+    r"([a-z\-]+/\d{7}|\d{4}\.\d{4,5})",
+    _re.IGNORECASE,
+)
+_BARE_ARXIV_RE = _re.compile(
+    r"^([a-z\-]+/\d{7}|\d{4}\.\d{4,5})(v\d+)?$",
+    _re.IGNORECASE,
+)
+_PMID_RE = _re.compile(r"(?:pubmed(?:\.ncbi\.nlm\.nih\.gov)?/|pubmed/)(\d+)", _re.IGNORECASE)
+
+
+def _source_id_for_paper(stype: str, url_or_path: str) -> str:
+    """
+    Return a stable ``source_id`` string for an academic paper source.
+
+    Strategy:
+      - arxiv   → "arxiv:{normalised_id}"    (e.g. "arxiv:1706.03762")
+      - pubmed  → "pubmed:{pmid}"            (e.g. "pubmed:12345678")
+      - pdf / latex / markdown / unknown
+               → "{stype}:{abs_path_or_url}"
+    """
+    s = url_or_path.strip()
+    if stype == "arxiv":
+        m = _ARXIV_ID_FROM_URL.search(s) or _BARE_ARXIV_RE.match(s)
+        arxiv_id = m.group(1) if m else s
+        return f"arxiv:{arxiv_id}"
+    if stype == "pubmed":
+        m = _PMID_RE.search(s)
+        pmid = m.group(1) if m else (s if s.isdigit() else s)
+        return f"pubmed:{pmid}"
+    # For local files, normalise to absolute path for stability.
+    try:
+        resolved = str(Path(s).resolve())
+    except Exception:
+        resolved = s
+    return f"{stype}:{resolved}"
+
+
+def _source_id_for_ref(ref_doc: Document) -> str:
+    """Return the ``source_id`` for a reference Document."""
+    meta = ref_doc.metadata
+    if meta.get("arxiv_id"):
+        return f"arxiv:{meta['arxiv_id']}"
+    if meta.get("pmid"):
+        return f"pubmed:{meta['pmid']}"
+    return f"ref:{meta.get('source_url', '')}"
+
+
+def _inject_source_id(docs: list[Document], source_id: str) -> None:
+    """Set ``source_id`` in the metadata of every Document in *docs* (in-place)."""
+    for doc in docs:
+        doc.metadata["source_id"] = source_id
+
+
 # ── Per-source loaders ────────────────────────────────────────────────────────
 
 def _load_paper(src: PaperSource, llm_cfg: dict | None) -> tuple[list[Document], dict]:
@@ -268,8 +358,16 @@ def _load_paper(src: PaperSource, llm_cfg: dict | None) -> tuple[list[Document],
         raise ValueError(f"Unknown paper source type {stype!r} for {url!r}")
 
     primary_meta = result["primary"].metadata
+    primary_id = _source_id_for_paper(stype, url)
+
+    # Tag primary and every reference doc with stable source_ids.
+    result["primary"].metadata["source_id"] = primary_id
+    for ref in result["references"]:
+        ref.metadata["source_id"] = _source_id_for_ref(ref)
+
     entry: dict = {
         "source_type":      stype,
+        "source_id":        primary_id,
         "source_url":       url,
         "title":            primary_meta.get("title", ""),
         "authors":          primary_meta.get("authors", []),
@@ -277,6 +375,7 @@ def _load_paper(src: PaperSource, llm_cfg: dict | None) -> tuple[list[Document],
         "fetch_references": fetch_refs,
         "reference_depth":  depth,
         "reference_top_n":  top_n,
+        "ingested_at":      None,
         "references": [
             {
                 "id":            ref.metadata.get("arxiv_id") or ref.metadata.get("pmid", ""),
@@ -285,6 +384,8 @@ def _load_paper(src: PaperSource, llm_cfg: dict | None) -> tuple[list[Document],
                 "depth":         ref.metadata.get("depth", 1),
                 "referenced_by": ref.metadata.get("referenced_by", []),
                 "citation_count": ref.metadata.get("citation_count", 0),
+                # source_id per reference document — already set on the doc above
+                "source_id":     ref.metadata["source_id"],
             }
             for ref in result["references"]
         ],
@@ -310,17 +411,26 @@ def _load_youtube(
             continue
         seen.add(vid_url)
         playlist_url = doc.metadata.get("playlist_url")
+        sid = f"youtube:{vid_url}"
+        doc.metadata["source_id"] = sid
         entries.append(
             {
                 "url":            vid_url,
+                "source_id":      sid,
                 "title":          doc.metadata.get("title", ""),
                 "is_playlist":    playlist_url is not None,
                 "playlist_url":   playlist_url,
                 "author":         doc.metadata.get("author", ""),
                 "length_seconds": doc.metadata.get("length_seconds", 0),
                 "publish_date":   doc.metadata.get("publish_date", ""),
+                "ingested_at":    None,
             }
         )
+    # Ensure every doc (including non-first docs from same video) has source_id
+    for doc in docs:
+        if "source_id" not in doc.metadata:
+            vid_url = doc.metadata.get("source_url", url)
+            doc.metadata["source_id"] = f"youtube:{vid_url}"
     return docs, entries
 
 
@@ -330,7 +440,15 @@ def _load_github(src: GithubSourceConfig) -> tuple[list[Document], dict]:
     url = src["url"]
     branch = src.get("branch", "main")
     docs = GitHubSource().fetch(url)
-    return docs, {"url": url, "branch": branch, "file_count": len(docs)}
+    sid = f"github:{url}"
+    _inject_source_id(docs, sid)
+    return docs, {
+        "url": url,
+        "source_id": sid,
+        "branch": branch,
+        "file_count": len(docs),
+        "ingested_at": None,
+    }
 
 
 def _load_webpage(
@@ -349,7 +467,9 @@ def _load_webpage(
         from app.sources.webpage import WebpageSource
         docs = WebpageSource().fetch(url, username=username, collection_name=cname)
 
-    return docs, {"url": url, "crawl": crawl, "page_count": len(docs)}
+    sid = f"webpage:{url}"
+    _inject_source_id(docs, sid)
+    return docs, {"url": url, "source_id": sid, "crawl": crawl, "page_count": len(docs), "ingested_at": None}
 
 
 def _load_video(
@@ -359,7 +479,9 @@ def _load_video(
 
     path = src["file_path"]
     docs = VideoSource().fetch(path, username=username, collection_name=cname, llm_config=llm_cfg)
-    return docs, {"file_path": path, "metadata": {"frame_count": len(docs)}}
+    sid = f"video:{Path(path).resolve()}"
+    _inject_source_id(docs, sid)
+    return docs, {"file_path": path, "source_id": sid, "metadata": {"frame_count": len(docs)}, "ingested_at": None}
 
 
 def _load_audio(
@@ -373,14 +495,18 @@ def _load_audio(
         path, username=username, collection_name=cname
     )
     first = docs[0] if docs else None
+    sid = f"audio:{Path(path).resolve()}"
+    _inject_source_id(docs, sid)
     return docs, {
         "file_path": path,
+        "source_id": sid,
         "metadata": {
             "duration_seconds": first.metadata.get("duration_seconds", 0) if first else 0,
             "language":         first.metadata.get("language", "") if first else "",
             "word_count":       first.metadata.get("word_count", 0) if first else 0,
             "model_size":       model_size,
         },
+        "ingested_at": None,
     }
 
 
@@ -396,15 +522,53 @@ def _load_image(
         username=username, collection_name=cname,
     )
     first = docs[0] if docs else None
+    sid = f"image:{Path(path).resolve()}"
+    _inject_source_id(docs, sid)
     return docs, {
         "file_path": path,
+        "source_id": sid,
         "metadata": {
             "description": first.metadata.get("description", "") if first else "",
         },
+        "ingested_at": None,
     }
 
 
+def _load_dynamic_sources(
+    sources: CollectionSources,
+    username: str,
+    creds_map: dict,
+) -> tuple[list[dict], list[str]]:
+    """
+    Process every dynamic data source in *sources*, running sparse analysis
+    where needed.  No Documents are produced — only storable metadata dicts.
+
+    Returns
+    -------
+    (dynamic_entries, load_errors)
+    """
+    entries: list[dict] = []
+    errors: list[str] = []
+
+    for src in sources.get("dynamic_sources") or []:
+        try:
+            entry = load_dynamic_source(username, src, creds_map)
+            entries.append(entry)
+        except Exception as exc:
+            msg = f"dynamic_source {src.get('source_type')!r} / {src.get('file_path') or src.get('credential_key')!r}: {exc}"
+            errors.append(msg)
+            print(f"[collection] ERROR loading {msg}", file=sys.stderr)
+
+    return entries, errors
+
+
 # ── Aggregate dispatcher ──────────────────────────────────────────────────────
+
+# Maximum parallel workers for source loaders.
+# LLM-backed sources (PDF, image, video) can spike provider rate limits;
+# a default cap of 4 keeps concurrency reasonable without overwhelming APIs.
+_DEFAULT_MAX_WORKERS = 4
+
 
 def _load_all_sources(
     sources: CollectionSources,
@@ -413,21 +577,33 @@ def _load_all_sources(
     collection_name: str,
     docs_dir: Path,
     start_index: int = 0,
+    max_workers: int | None = _DEFAULT_MAX_WORKERS,
 ) -> tuple[dict, list[str], list[str]]:
     """
-    Dispatch every source in *sources* to the appropriate adapter.
+    Dispatch every source in *sources* to the appropriate adapter,
+    loading all sources concurrently via a ``ThreadPoolExecutor``.
+
+    Each source item is submitted as an independent future; results are
+    processed as they complete (``as_completed``).  Pickling and the
+    ``doc_counter`` increment happen only in the main thread after a
+    future resolves, so there are no write races.
+
+    Every source entry dict is enriched with:
+      ``source_id``   — stable identifier (see module docstring)
+      ``doc_paths``   — list of absolute paths to the pkl files for this source
+      ``ingested_at`` — always ``None`` initially; set by the ingestion layer
 
     Returns
     -------
     (collection_fields, document_paths, load_errors)
 
     ``collection_fields``  — dict with keys papers/youtube/github_repos/webpages/
-                             videos/audios/images, ready to merge into the
-                             collection data dict.
-    ``document_paths``     — absolute paths to all pkl files written.
+                             videos/audios/images/dynamic_data_sources.
+    ``document_paths``     — flat list of all pkl paths written (all sources).
     ``load_errors``        — non-fatal per-source error strings.
     """
     llm_cfg = cfg.get("llm")
+    creds_map: dict = cfg.get("data_source_creds") or {}
 
     papers_entries:  list[dict] = []
     youtube_entries: list[dict] = []
@@ -437,109 +613,117 @@ def _load_all_sources(
     audio_entries:   list[dict] = []
     image_entries:   list[dict] = []
 
-    all_doc_paths: list[str] = []
-    errors:        list[str] = []
+    errors: list[str] = []
     doc_counter = start_index
 
-    # ── Papers ────────────────────────────────────────────────────────────────
+    # Build a flat list of (callable, args, src_type, error_label) tasks.
+    # Each task maps to ONE source item (not one category).
+    tasks: list[tuple[Any, tuple, str, str]] = []
+
     for src in sources.get("papers") or []:
-        try:
-            docs, entry = _load_paper(src, llm_cfg)
-            paths = _pickle_docs(docs, docs_dir, start_index=doc_counter)
-            doc_counter += len(docs)
-            all_doc_paths.extend(paths)
-            papers_entries.append(entry)
-        except Exception as exc:
-            msg = f"paper {src.get('url_or_path')!r}: {exc}"
-            errors.append(msg)
-            print(f"[collection] ERROR loading {msg}", file=sys.stderr)
-
-    # ── YouTube ───────────────────────────────────────────────────────────────
+        tasks.append((_load_paper, (src, llm_cfg), "paper", str(src.get("url_or_path"))))
     for src in sources.get("youtube") or []:
-        try:
-            docs, entries = _load_youtube(src, username, collection_name)
-            paths = _pickle_docs(docs, docs_dir, start_index=doc_counter)
-            doc_counter += len(docs)
-            all_doc_paths.extend(paths)
-            youtube_entries.extend(entries)
-        except Exception as exc:
-            msg = f"youtube {src.get('url')!r}: {exc}"
-            errors.append(msg)
-            print(f"[collection] ERROR loading {msg}", file=sys.stderr)
-
-    # ── GitHub ────────────────────────────────────────────────────────────────
+        tasks.append((_load_youtube, (src, username, collection_name), "youtube", str(src.get("url"))))
     for src in sources.get("github") or []:
-        try:
-            docs, entry = _load_github(src)
-            paths = _pickle_docs(docs, docs_dir, start_index=doc_counter)
-            doc_counter += len(docs)
-            all_doc_paths.extend(paths)
-            github_entries.append(entry)
-        except Exception as exc:
-            msg = f"github {src.get('url')!r}: {exc}"
-            errors.append(msg)
-            print(f"[collection] ERROR loading {msg}", file=sys.stderr)
-
-    # ── Web pages ─────────────────────────────────────────────────────────────
+        tasks.append((_load_github, (src,), "github", str(src.get("url"))))
     for src in sources.get("webpages") or []:
-        try:
-            docs, entry = _load_webpage(src, username, collection_name)
-            paths = _pickle_docs(docs, docs_dir, start_index=doc_counter)
-            doc_counter += len(docs)
-            all_doc_paths.extend(paths)
-            webpage_entries.append(entry)
-        except Exception as exc:
-            msg = f"webpage {src.get('url')!r}: {exc}"
-            errors.append(msg)
-            print(f"[collection] ERROR loading {msg}", file=sys.stderr)
-
-    # ── Videos ───────────────────────────────────────────────────────────────
+        tasks.append((_load_webpage, (src, username, collection_name), "webpage", str(src.get("url"))))
     for src in sources.get("videos") or []:
-        try:
-            docs, entry = _load_video(src, llm_cfg, username, collection_name)
-            paths = _pickle_docs(docs, docs_dir, start_index=doc_counter)
-            doc_counter += len(docs)
-            all_doc_paths.extend(paths)
-            video_entries.append(entry)
-        except Exception as exc:
-            msg = f"video {src.get('file_path')!r}: {exc}"
-            errors.append(msg)
-            print(f"[collection] ERROR loading {msg}", file=sys.stderr)
-
-    # ── Audio ─────────────────────────────────────────────────────────────────
+        tasks.append((_load_video, (src, llm_cfg, username, collection_name), "video", str(src.get("file_path"))))
     for src in sources.get("audios") or []:
-        try:
-            docs, entry = _load_audio(src, username, collection_name)
-            paths = _pickle_docs(docs, docs_dir, start_index=doc_counter)
-            doc_counter += len(docs)
-            all_doc_paths.extend(paths)
-            audio_entries.append(entry)
-        except Exception as exc:
-            msg = f"audio {src.get('file_path')!r}: {exc}"
-            errors.append(msg)
-            print(f"[collection] ERROR loading {msg}", file=sys.stderr)
-
-    # ── Images ────────────────────────────────────────────────────────────────
+        tasks.append((_load_audio, (src, username, collection_name), "audio", str(src.get("file_path"))))
     for src in sources.get("images") or []:
-        try:
-            docs, entry = _load_image(src, llm_cfg, username, collection_name)
+        tasks.append((_load_image, (src, llm_cfg, username, collection_name), "image", str(src.get("file_path"))))
+
+    # Submit all source-loading tasks concurrently.
+    future_to_meta: dict[Any, tuple[str, str]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for fn, args, src_type, label in tasks:
+            fut = executor.submit(fn, *args)
+            future_to_meta[fut] = (src_type, label)
+
+        # Process completions in the main thread to keep pickling race-free.
+        for fut in as_completed(future_to_meta):
+            src_type, label = future_to_meta[fut]
+            try:
+                result = fut.result()
+            except Exception as exc:
+                msg = f"{src_type} {label!r}: {exc}"
+                errors.append(msg)
+                print(f"[collection] ERROR loading {msg}", file=sys.stderr)
+                continue
+
+            # result is either (docs, entry) or (docs, list[entry])
+            if src_type == "youtube":
+                docs, entries = result  # list[dict]
+            else:
+                docs, entries = result  # single dict
+                entries = [entries]
+
+            # Inject primary source_id onto every doc that doesn't have one yet
+            # (paper refs already have their own source_id set by the loader).
+            for doc in docs:
+                if "source_id" not in doc.metadata:
+                    # Fallback: use the entry source_id if available.
+                    fallback_sid = entries[0].get("source_id", "") if entries else ""
+                    doc.metadata["source_id"] = fallback_sid
+
+            # Pickle in the main thread; update counter.
             paths = _pickle_docs(docs, docs_dir, start_index=doc_counter)
             doc_counter += len(docs)
-            all_doc_paths.extend(paths)
-            image_entries.append(entry)
-        except Exception as exc:
-            msg = f"image {src.get('file_path')!r}: {exc}"
-            errors.append(msg)
-            print(f"[collection] ERROR loading {msg}", file=sys.stderr)
+
+            # Distribute doc_paths per entry (for multi-entry types like youtube).
+            # For youtube each entry = one video; docs are already tagged with
+            # per-video source_id so we can split them by source_id.
+            if src_type == "youtube" and len(entries) > 1:
+                sid_to_paths: dict[str, list[str]] = {}
+                for doc, path in zip(docs, paths):
+                    s = doc.metadata.get("source_id", "")
+                    sid_to_paths.setdefault(s, []).append(path)
+                for entry in entries:
+                    entry["doc_paths"] = sid_to_paths.get(entry["source_id"], [])
+                youtube_entries.extend(entries)
+            else:
+                for entry in entries:
+                    entry["doc_paths"] = paths
+                if src_type == "paper":
+                    papers_entries.extend(entries)
+                elif src_type == "youtube":
+                    youtube_entries.extend(entries)
+                elif src_type == "github":
+                    github_entries.extend(entries)
+                elif src_type == "webpage":
+                    webpage_entries.extend(entries)
+                elif src_type == "video":
+                    video_entries.extend(entries)
+                elif src_type == "audio":
+                    audio_entries.extend(entries)
+                elif src_type == "image":
+                    image_entries.extend(entries)
+
+    # ── Dynamic data sources (no Documents; run synchronously) ────────────────
+    dynamic_entries, dynamic_errors = _load_dynamic_sources(sources, username, creds_map)
+    errors.extend(dynamic_errors)
+
+    all_doc_paths: list[str] = [
+        p
+        for entries_list in (
+            papers_entries, youtube_entries, github_entries,
+            webpage_entries, video_entries, audio_entries, image_entries,
+        )
+        for entry in entries_list
+        for p in entry.get("doc_paths", [])
+    ]
 
     fields = {
-        "papers":       papers_entries,
-        "youtube":      youtube_entries,
-        "github_repos": github_entries,
-        "webpages":     webpage_entries,
-        "videos":       video_entries,
-        "audios":       audio_entries,
-        "images":       image_entries,
+        "papers":               papers_entries,
+        "youtube":              youtube_entries,
+        "github_repos":         github_entries,
+        "webpages":             webpage_entries,
+        "videos":               video_entries,
+        "audios":               audio_entries,
+        "images":               image_entries,
+        "dynamic_data_sources": dynamic_entries,
     }
     return fields, all_doc_paths, errors
 
@@ -653,7 +837,10 @@ def update_collection(
     )
 
     # Merge new entries into the existing collection data.
-    for key in ("papers", "youtube", "github_repos", "webpages", "videos", "audios", "images"):
+    for key in (
+        "papers", "youtube", "github_repos", "webpages",
+        "videos", "audios", "images", "dynamic_data_sources",
+    ):
         existing.setdefault(key, [])
         existing[key].extend(fields.get(key, []))
     existing["updated_at"] = _now_iso()
@@ -671,10 +858,23 @@ def update_collection(
     )
 
 
-def delete_collection(username: str, collection_name: str) -> None:
+def delete_collection(
+    username: str,
+    collection_name: str,
+    config: dict | None = None,
+    password: str | None = None,
+) -> None:
     """
-    Delete the collection record from the database and remove all associated
-    data files (pkl files and any sidecar files written by the source adapters).
+    Delete the collection record from the database, remove all associated
+    data files (pkl files and any sidecar files written by the source adapters),
+    and delete the corresponding vectors from the vector store.
+
+    Parameters
+    ----------
+    username         : owning user's username
+    collection_name  : collection to delete
+    config           : optional config overrides — used for vector store access
+    password         : user's password — enables per-user vector store credentials
 
     Raises
     ------
@@ -689,6 +889,17 @@ def delete_collection(username: str, collection_name: str) -> None:
     data_dir = resolve_data_dir(username, collection_name)
     if data_dir.exists():
         shutil.rmtree(data_dir)
+
+    # Clean up vectors from the vector store (non-fatal — store may not be configured).
+    try:
+        from app.storage.ingestion import delete_collection_vectors
+        delete_collection_vectors(username, collection_name, config=config, password=password)
+    except Exception as exc:
+        print(
+            f"[collection] WARNING: could not delete vectors for "
+            f"{collection_name!r}: {exc}",
+            file=sys.stderr,
+        )
 
 
 def reload_collection(
@@ -780,6 +991,23 @@ def reload_collection(
             ImageSourceConfig(file_path=i["file_path"])
             for i in existing["images"]
         ]
+
+    if existing.get("dynamic_data_sources"):
+        # Preserve user-supplied descriptions; re-analyse auto-generated ones.
+        dynamic_configs: list[DynamicDataSourceConfig] = []
+        for d in existing["dynamic_data_sources"]:
+            cfg_entry: DynamicDataSourceConfig = DynamicDataSourceConfig(
+                source_type=d["source_type"]
+            )
+            # Carry through identifying fields.
+            for field in ("credential_key", "file_path", "database", "table", "mongo_collection"):
+                if d.get(field) is not None:
+                    cfg_entry[field] = d[field]  # type: ignore[literal-required]
+            # Only preserve user-supplied descriptions — let the rest be re-analysed.
+            if d.get("description_source") == "user":
+                cfg_entry["description"] = d["description"]
+            dynamic_configs.append(cfg_entry)
+        stored_sources["dynamic_sources"] = dynamic_configs
 
     fields, doc_paths, errors = _load_all_sources(
         stored_sources, effective_cfg, username, collection_name, docs_dir
