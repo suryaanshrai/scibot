@@ -70,3 +70,7 @@ POSTGRES_CONNECTION_STRING = get_env("POSTGRES_CONNECTION_STRING")
 SEMANTIC_SCHOLAR_API_KEY = get_env("SEMANTIC_SCHOLAR_API_KEY")
 # NCBI/PubMed — optional; unlocks 10 req/s (vs 3 req/s anonymous)
 NCBI_API_KEY = get_env("NCBI_API_KEY")
+
+# ── GitHub ────────────────────────────────────────────────────────────────────
+# GitHub personal access token — required by GithubFileLoader
+GITHUB_TOKEN = get_env("GITHUB_TOKEN")

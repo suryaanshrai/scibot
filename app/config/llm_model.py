@@ -311,7 +311,7 @@ def get_llm(config: dict[str, Any] | None = None) -> Any:
     temperature = float(raw_temp) if raw_temp is not None else 0.7
 
     raw_max_tokens = cfg.get("max_tokens") or DEFAULT_LLM_MAX_TOKENS
-    max_tokens = int(raw_max_tokens) if raw_max_tokens is not None else None
+    max_tokens = int(raw_max_tokens) if raw_max_tokens else None
 
     streaming: bool = bool(cfg.get("streaming", False))
     timeout: float | None = cfg.get("timeout")

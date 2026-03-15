@@ -7,11 +7,13 @@ Provides:
   - iCiteClient            (PubMed reference graph via NIH iCite API)
   - collect_references_arxiv / collect_references_pubmed
   - make_document helper
+  - resolve_data_dir       (creates and returns per-user/collection storage path)
 """
 
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any, TypedDict
 
 import requests
@@ -51,6 +53,21 @@ class FetchResult(TypedDict):
 
 def make_document(content: str, metadata: dict[str, Any]) -> Document:
     return Document(page_content=content, metadata=metadata)
+
+
+_APP_DIR = Path(__file__).parent.parent  # app/
+
+
+def resolve_data_dir(username: str = "default", collection_name: str = "sample") -> Path:
+    """
+    Return (and create) the per-user/collection data directory.
+
+    Layout: app/data/{username}/{collection_name}/
+    Defaults to: app/data/default/sample/
+    """
+    path = _APP_DIR / "data" / username / collection_name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 # ── Semantic Scholar client ───────────────────────────────────────────────────
