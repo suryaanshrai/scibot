@@ -3384,6 +3384,7 @@ dependencies = [
     { name = "langchain-qdrant" },
     { name = "langchain-text-splitters" },
     { name = "langchain-xai" },
+    { name = "python-dotenv" },
 ]
 
 [package.metadata]
@@ -3410,6 +3411,7 @@ requires-dist = [
     { name = "langchain-qdrant", specifier = ">=1.1.0" },
     { name = "langchain-text-splitters", specifier = ">=1.1.1" },
     { name = "langchain-xai", specifier = ">=1.2.2" },
+    { name = "python-dotenv", specifier = ">=1.0" },
 ]
 
 [[package]]
