@@ -191,3 +191,34 @@ def update_password(username: str, old_password: str, new_password: str) -> None
             """,
             (new_pw_hash, new_auth_salt_b64, new_enc_salt_b64, new_config_enc, username),
         )
+
+    from app.users.config import _invalidate_user_config_cache
+
+    _invalidate_user_config_cache(username)
+
+
+def update_username(username: str, password: str, new_username: str) -> None:
+    """
+    Rename a user account.
+
+    Raises
+    ------
+    AuthError   If *password* is incorrect.
+    ValueError  If *new_username* is malformed or already taken.
+    """
+    _validate_username(new_username)
+    authenticate(username, password)  # raises AuthError on failure
+    with get_connection() as conn:
+        try:
+            conn.execute(
+                "UPDATE users SET username = ? WHERE username = ?",
+                (new_username, username),
+            )
+        except Exception as exc:
+            if "UNIQUE" in str(exc).upper():
+                raise ValueError(f"Username {new_username!r} is already taken.") from exc
+            raise
+
+    from app.users.config import _invalidate_user_config_cache
+
+    _invalidate_user_config_cache(username)

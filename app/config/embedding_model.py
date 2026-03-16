@@ -24,6 +24,8 @@ Usage:
 from __future__ import annotations
 
 import importlib.util
+import json
+from functools import lru_cache
 from typing import Any
 
 from app.config.settings import (
@@ -159,12 +161,21 @@ def _get_registry_entry(provider: str) -> dict[str, Any]:
     )
 
 
+def _config_cache_key(config: dict[str, Any] | None) -> str:
+    return json.dumps(config or {}, sort_keys=True, separators=(",", ":"), default=str)
+
+
+@lru_cache(maxsize=32)
+def _get_embedding_model_cached(config_key: str) -> Any:
+    return _build_embedding_model(json.loads(config_key))
+
+
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
 
-def get_embedding_model(config: dict[str, Any] | None = None) -> Any:
+def _build_embedding_model(config: dict[str, Any] | None = None) -> Any:
     """
     Return an initialised LangChain embedding model.
 
@@ -270,6 +281,10 @@ def get_embedding_model(config: dict[str, Any] | None = None) -> Any:
 
     # Should never reach here — _get_registry_entry raises first
     raise ValueError(f"Unsupported embedding provider: '{provider}'")
+
+
+def get_embedding_model(config: dict[str, Any] | None = None) -> Any:
+    return _get_embedding_model_cached(_config_cache_key(config))
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+	<defs>
+		<linearGradient id="scibot-bg" x1="12" y1="10" x2="52" y2="54" gradientUnits="userSpaceOnUse">
+			<stop offset="0" stop-color="#22D3EE" />
+			<stop offset="1" stop-color="#0EA5B7" />
+		</linearGradient>
+	</defs>
+	<rect x="8" y="8" width="48" height="48" rx="13" fill="url(#scibot-bg)" />
+	<path d="M32 19.5V23" stroke="white" stroke-width="3" stroke-linecap="round" />
+	<path d="M25 24H39C41.7614 24 44 26.2386 44 29V35C44 37.7614 41.7614 40 39 40H25C22.2386 40 20 37.7614 20 35V29C20 26.2386 22.2386 24 25 24Z" stroke="white" stroke-width="3" stroke-linejoin="round" />
+	<path d="M20 31H16.5" stroke="white" stroke-width="3" stroke-linecap="round" />
+	<path d="M47.5 31H44" stroke="white" stroke-width="3" stroke-linecap="round" />
+	<path d="M27 40V44" stroke="white" stroke-width="3" stroke-linecap="round" />
+	<path d="M37 40V44" stroke="white" stroke-width="3" stroke-linecap="round" />
+	<circle cx="27.5" cy="31.5" r="2.25" fill="white" />
+	<circle cx="36.5" cy="31.5" r="2.25" fill="white" />
+	<path d="M28 35.5H36" stroke="white" stroke-width="3" stroke-linecap="round" />
+</svg>

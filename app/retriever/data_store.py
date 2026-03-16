@@ -517,17 +517,10 @@ class DataStoreRetriever:
         """
         Search the vector store and return ``(Document, score)`` pairs.
 
-        Scores are **raw provider values** and are not normalised to a common
-        range:
-
-        - **Chroma**: cosine distance (lower = more similar; 0–2).
-        - **Pinecone / Qdrant / MongoDB / pgvector**: cosine similarity
-          (higher = more similar; typically 0–1).
-        - **Milvus**: depends on the index metric configured at collection
-          creation time.
-
-        For normalised relevance scores use
-        ``search(search_type='similarity_score_threshold')`` instead.
+        Scores are **normalised relevance scores** in the range ``[0, 1]``
+        where ``1`` means perfectly similar and ``0`` means unrelated.
+        LangChain's ``similarity_search_with_relevance_scores`` handles the
+        provider-specific conversion (e.g. Chroma cosine distance → similarity).
 
         Parameters
         ----------
@@ -538,10 +531,10 @@ class DataStoreRetriever:
         Returns
         -------
         list[tuple[Document, float]]
-            Pairs of ``(document, raw_score)``, ordered by score.
+            Pairs of ``(document, relevance_score)`` ordered by score descending.
         """
         filter_kwargs = _normalize_filter(filter, self.provider)
-        return self.store.similarity_search_with_score(query, k=k, **filter_kwargs)
+        return self.store.similarity_search_with_relevance_scores(query, k=k, **filter_kwargs)
 
     def mmr_search(
         self,

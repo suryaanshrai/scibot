@@ -1,0 +1,158 @@
+@import "tailwindcss";
+@plugin "tailwindcss-animate";
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-sidebar: hsl(var(--sidebar));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  /*  Light mode  */
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 228 25% 10%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 228 25% 10%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 228 25% 10%;
+
+    /* Teal primary � mirrors ikeloa #0ca4b0 */
+    --primary: 184 87% 30%;
+    --primary-foreground: 0 0% 98%;
+
+    --secondary: 210 40% 92%;
+    --secondary-foreground: 228 25% 15%;
+
+    --muted: 210 40% 92%;
+    --muted-foreground: 215 20% 50%;
+
+    /* Subtle teal tint for hover surfaces */
+    --accent: 184 50% 90%;
+    --accent-foreground: 184 60% 25%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 214 32% 88%;
+    --input: 214 32% 88%;
+    --ring: 184 87% 30%;
+
+    --radius: 0.5rem;
+
+    --sidebar: 210 36% 95%;
+    --sidebar-foreground: 228 25% 10%;
+    --sidebar-width: 260px;
+  }
+
+  /*  Dark mode (ikeloa palette)  */
+  .dark {
+    --background: 228 20% 4%;
+    --foreground: 210 40% 93%;
+
+    --card: 228 18% 7%;
+    --card-foreground: 210 40% 93%;
+
+    --popover: 228 18% 7%;
+    --popover-foreground: 210 40% 93%;
+
+    /* ikeloa #0ca4b0 */
+    --primary: 184 87% 37%;
+    --primary-foreground: 0 0% 98%;
+
+    --secondary: 228 16% 12%;
+    --secondary-foreground: 210 40% 82%;
+
+    --muted: 228 16% 12%;
+    --muted-foreground: 215 18% 54%;
+
+    /* Teal-tinted hover surface */
+    --accent: 184 55% 14%;
+    --accent-foreground: 184 80% 72%;
+
+    --destructive: 0 70% 50%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 228 16% 14%;
+    --input: 228 16% 14%;
+    --ring: 184 87% 37%;
+
+    --sidebar: 228 22% 5%;
+    --sidebar-foreground: 210 40% 93%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+    box-sizing: border-box;
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/*  Scrollbar  */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+}
+
+/*  Streaming cursor  */
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.cursor-blink::after {
+  content: "";
+  animation: cursor-blink 0.7s infinite;
+  margin-left: 1px;
+}
+
+/*  Tool-call shimmer  */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 25%,
+    hsl(var(--border)) 50%,
+    hsl(var(--muted)) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}

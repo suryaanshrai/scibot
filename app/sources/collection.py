@@ -365,16 +365,32 @@ def _load_paper(src: PaperSource, llm_cfg: dict | None) -> tuple[list[Document],
     for ref in result["references"]:
         ref.metadata["source_id"] = _source_id_for_ref(ref)
 
+    _title = primary_meta.get("title", "")
+    _authors: list = primary_meta.get("authors", [])
+    _year = primary_meta.get("year")
+    _author_str = (
+        ", ".join(_authors[:3]) + (" et al." if len(_authors) > 3 else "")
+        if _authors else "unknown authors"
+    )
+    _desc_parts = [f'"{_title}"' if _title else f"[{stype}]"]
+    if _year:
+        _desc_parts.append(f"({_year})")
+    _desc_parts.append(f"by {_author_str}.")
+    if fetch_refs:
+        _ref_count = len(result["references"])
+        _desc_parts.append(f"Includes {_ref_count} reference{'s' if _ref_count != 1 else ''}.")
+
     entry: dict = {
         "source_type":      stype,
         "source_id":        primary_id,
         "source_url":       url,
-        "title":            primary_meta.get("title", ""),
-        "authors":          primary_meta.get("authors", []),
-        "year":             primary_meta.get("year"),
+        "title":            _title,
+        "authors":          _authors,
+        "year":             _year,
         "fetch_references": fetch_refs,
         "reference_depth":  depth,
         "reference_top_n":  top_n,
+        "description":      " ".join(_desc_parts),
         "ingested_at":      None,
         "references": [
             {
@@ -413,6 +429,15 @@ def _load_youtube(
         playlist_url = doc.metadata.get("playlist_url")
         sid = f"youtube:{vid_url}"
         doc.metadata["source_id"] = sid
+        _yt_title = doc.metadata.get("title", "") or vid_url
+        _yt_author = doc.metadata.get("author", "")
+        _yt_secs = doc.metadata.get("length_seconds", 0)
+        _yt_desc = (
+            f"'{_yt_title}'"
+            + (f" by {_yt_author}" if _yt_author else "")
+            + (f" ({_yt_secs // 60}min)" if _yt_secs else "")
+            + "."
+        )
         entries.append(
             {
                 "url":            vid_url,
@@ -423,6 +448,7 @@ def _load_youtube(
                 "author":         doc.metadata.get("author", ""),
                 "length_seconds": doc.metadata.get("length_seconds", 0),
                 "publish_date":   doc.metadata.get("publish_date", ""),
+                "description":    _yt_desc,
                 "ingested_at":    None,
             }
         )
@@ -447,6 +473,7 @@ def _load_github(src: GithubSourceConfig) -> tuple[list[Document], dict]:
         "source_id": sid,
         "branch": branch,
         "file_count": len(docs),
+        "description": f"GitHub repository {url} — {len(docs)} file{'s' if len(docs) != 1 else ''}, branch {branch}.",
         "ingested_at": None,
     }
 
@@ -469,7 +496,13 @@ def _load_webpage(
 
     sid = f"webpage:{url}"
     _inject_source_id(docs, sid)
-    return docs, {"url": url, "source_id": sid, "crawl": crawl, "page_count": len(docs), "ingested_at": None}
+    _wp_label = (docs[0].metadata.get("title") or url) if docs else url
+    _wp_desc = (
+        f"{'Crawled website' if crawl else 'Web page'}: {_wp_label}"
+        f" ({len(docs)} page{'s' if len(docs) != 1 else ''})"
+        "."
+    )
+    return docs, {"url": url, "source_id": sid, "crawl": crawl, "page_count": len(docs), "description": _wp_desc, "ingested_at": None}
 
 
 def _load_video(
@@ -481,7 +514,7 @@ def _load_video(
     docs = VideoSource().fetch(path, username=username, collection_name=cname, llm_config=llm_cfg)
     sid = f"video:{Path(path).resolve()}"
     _inject_source_id(docs, sid)
-    return docs, {"file_path": path, "source_id": sid, "metadata": {"frame_count": len(docs)}, "ingested_at": None}
+    return docs, {"file_path": path, "source_id": sid, "metadata": {"frame_count": len(docs)}, "description": f"Video file: {Path(path).name}.", "ingested_at": None}
 
 
 def _load_audio(
@@ -506,6 +539,12 @@ def _load_audio(
             "word_count":       first.metadata.get("word_count", 0) if first else 0,
             "model_size":       model_size,
         },
+        "description": (
+            f"Audio: {Path(path).name}"
+            + (f", ~{first.metadata.get('duration_seconds', 0) // 60}min" if first and first.metadata.get("duration_seconds") else "")
+            + (f", language={first.metadata.get('language')}" if first and first.metadata.get("language") else "")
+            + "."
+        ),
         "ingested_at": None,
     }
 
@@ -524,12 +563,14 @@ def _load_image(
     first = docs[0] if docs else None
     sid = f"image:{Path(path).resolve()}"
     _inject_source_id(docs, sid)
+    _img_desc = (first.metadata.get("description") or f"Image file: {Path(path).name}.") if first else f"Image file: {Path(path).name}."
     return docs, {
         "file_path": path,
         "source_id": sid,
         "metadata": {
             "description": first.metadata.get("description", "") if first else "",
         },
+        "description": _img_desc,
         "ingested_at": None,
     }
 

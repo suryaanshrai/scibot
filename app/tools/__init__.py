@@ -48,7 +48,11 @@ __all__ = [
 ]
 
 
-def build_tools(username: str, password: str) -> list[StructuredTool]:
+def build_tools(
+    username: str,
+    password: str,
+    config_override: dict | None = None,
+) -> list[StructuredTool]:
     """
     Return a list of LangChain StructuredTool instances configured for the
     given user.
@@ -86,6 +90,7 @@ def build_tools(username: str, password: str) -> list[StructuredTool]:
             "limit":        limit,
             "username":     username,
             "password":     password,
+            "config_override": config_override,
         })
 
     def _analyze_data_bound(
@@ -118,6 +123,20 @@ def build_tools(username: str, password: str) -> list[StructuredTool]:
             "source_id":       source_id,
             "source_type":     source_type,
             "filter":          filter,
+        })
+
+    def _web_search_bound(
+        query: str,
+        max_results: int = 5,
+        extra_domains: list[str] | None = None,
+    ) -> str:
+        return web_search.invoke({
+            "query": query,
+            "max_results": max_results,
+            "extra_domains": extra_domains or [],
+            "username": username,
+            "password": password,
+            "config_override": config_override,
         })
 
     # ── Build bound StructuredTools ───────────────────────────────────────────
@@ -154,8 +173,18 @@ def build_tools(username: str, password: str) -> list[StructuredTool]:
         ),
     )
 
+    bound_web_search = StructuredTool.from_function(
+        func=_web_search_bound,
+        name="web_search",
+        description=(
+            "Search the web using the configured backend for this user or chat. "
+            "Uses Tavily or SerpAPI when their configured API keys are available, "
+            "otherwise falls back to DuckDuckGo."
+        ),
+    )
+
     return [
-        web_search,
+        bound_web_search,
         arxiv_search,
         pubmed_search,
         bound_get_data,

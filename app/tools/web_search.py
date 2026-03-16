@@ -27,8 +27,6 @@ from urllib.parse import urlparse
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from app.config.settings import SERPAPI_API_KEY, TAVILY_API_KEY
-
 # ── Default domain whitelist ──────────────────────────────────────────────────
 
 _DEFAULT_WHITELIST: list[str] = [
@@ -95,11 +93,11 @@ def _format_results(results: list[dict], whitelist: list[str], max_results: int)
     return "\n\n".join(lines)
 
 
-def _run_tavily(query: str, max_results: int) -> list[dict]:
+def _run_tavily(query: str, max_results: int, api_key: str) -> list[dict]:
     from langchain_community.tools.tavily_search import TavilySearchResults
     tool_instance = TavilySearchResults(
         max_results=max_results * 2,  # over-fetch; we filter after
-        tavily_api_key=TAVILY_API_KEY,
+        tavily_api_key=api_key,
     )
     raw = tool_instance.invoke({"query": query})
     if isinstance(raw, list):
@@ -107,9 +105,9 @@ def _run_tavily(query: str, max_results: int) -> list[dict]:
     return []
 
 
-def _run_serp(query: str, max_results: int) -> list[dict]:
+def _run_serp(query: str, max_results: int, api_key: str) -> list[dict]:
     from langchain_community.utilities import SerpAPIWrapper
-    wrapper = SerpAPIWrapper(serpapi_api_key=SERPAPI_API_KEY)
+    wrapper = SerpAPIWrapper(serpapi_api_key=api_key)
     raw = wrapper.results(query)
     items: list[dict] = []
     for r in (raw.get("organic_results") or []):
@@ -150,10 +148,20 @@ class WebSearchInput(BaseModel):
         default_factory=list,
         description="Additional trusted domains to include in the whitelist for this call.",
     )
+    username: str | None = Field(default=None, description="Internal username binding.")
+    password: str | None = Field(default=None, description="Internal password binding.")
+    config_override: dict | None = Field(default=None, description="Internal chat-level config override.")
 
 
 @tool("web_search", args_schema=WebSearchInput)
-def web_search(query: str, max_results: int = 5, extra_domains: list[str] | None = None) -> str:
+def web_search(
+    query: str,
+    max_results: int = 5,
+    extra_domains: list[str] | None = None,
+    username: str | None = None,
+    password: str | None = None,
+    config_override: dict | None = None,
+) -> str:
     """
     Search the web for information and return results from trusted academic and
     reference domains.  Automatically selects the best available search backend
@@ -162,31 +170,56 @@ def web_search(query: str, max_results: int = 5, extra_domains: list[str] | None
     Returns a numbered list of results, each with title, URL, and a short
     snippet.  Only results from the whitelisted domains are included.
     """
+    from app.users.config import resolve_config
+
+    effective_cfg = resolve_config(username, password, config_override)
+    external_keys = effective_cfg.get("external_keys") or {}
+    search_cfg = effective_cfg.get("search") or {}
+    selected_tool = str(search_cfg.get("tool") or "").lower()
+    tavily_api_key = external_keys.get("TAVILY_API_KEY") or ""
+    serpapi_api_key = external_keys.get("SERPAPI_API_KEY") or ""
+
     whitelist = _DEFAULT_WHITELIST + (extra_domains or [])
 
     errors: list[str] = []
 
-    # Priority 1: Tavily
-    if TAVILY_API_KEY:
+    backend_order: list[str]
+    if selected_tool == "tavily":
+        backend_order = ["tavily", "serp", "duckduckgo"]
+    elif selected_tool == "serp":
+        backend_order = ["serp", "tavily", "duckduckgo"]
+    else:
+        backend_order = ["duckduckgo", "tavily", "serp"]
+
+    for backend in backend_order:
+        if backend == "tavily":
+            if not tavily_api_key:
+                if selected_tool == "tavily":
+                    errors.append("Tavily selected but TAVILY_API_KEY is not configured.")
+                continue
+            try:
+                raw = _run_tavily(query, max_results, tavily_api_key)
+                return _format_results(raw, whitelist, max_results)
+            except Exception as exc:
+                errors.append(f"Tavily error: {exc}")
+            continue
+
+        if backend == "serp":
+            if not serpapi_api_key:
+                if selected_tool == "serp":
+                    errors.append("SerpAPI selected but SERPAPI_API_KEY is not configured.")
+                continue
+            try:
+                raw = _run_serp(query, max_results, serpapi_api_key)
+                return _format_results(raw, whitelist, max_results)
+            except Exception as exc:
+                errors.append(f"SerpAPI error: {exc}")
+            continue
+
         try:
-            raw = _run_tavily(query, max_results)
+            raw = _run_duckduckgo(query, max_results)
             return _format_results(raw, whitelist, max_results)
         except Exception as exc:
-            errors.append(f"Tavily error: {exc}")
-
-    # Priority 2: SerpAPI
-    if SERPAPI_API_KEY:
-        try:
-            raw = _run_serp(query, max_results)
-            return _format_results(raw, whitelist, max_results)
-        except Exception as exc:
-            errors.append(f"SerpAPI error: {exc}")
-
-    # Priority 3: DuckDuckGo (always available)
-    try:
-        raw = _run_duckduckgo(query, max_results)
-        return _format_results(raw, whitelist, max_results)
-    except Exception as exc:
-        errors.append(f"DuckDuckGo error: {exc}")
+            errors.append(f"DuckDuckGo error: {exc}")
 
     return "Web search failed.\n" + "\n".join(errors)

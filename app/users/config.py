@@ -29,6 +29,8 @@ UserConfig structure (all keys optional)
     "external_keys": {
         "SEMANTIC_SCHOLAR_API_KEY": "...",
         "NCBI_API_KEY":            "...",
+        "TAVILY_API_KEY":          "tvly-...",
+        "SERPAPI_API_KEY":         "...",
         "GITHUB_TOKEN":            "ghp_..."
     }
 }
@@ -43,6 +45,9 @@ resolve_config(username, password, override)       -> dict
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import time
 from typing import TypedDict
 
 from app.users.crypto import decrypt_json, encrypt_json
@@ -59,6 +64,11 @@ class UserConfig(TypedDict, total=False):
     search: dict             # {"tool": "tavily"|"serp"|"duckduckgo", "whitelist_extra": ["example.com"]}
 
 
+_USER_CONFIG_CACHE_TTL_SECONDS = 30.0
+_USER_CONFIG_CACHE_MAX_ENTRIES = 128
+_USER_CONFIG_CACHE: dict[tuple[str, str], tuple[float, UserConfig]] = {}
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -70,6 +80,32 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[key] = val
     return result
+
+
+def _fernet_key_fingerprint(key: bytes) -> str:
+    return hashlib.sha256(key).hexdigest()
+
+
+def _invalidate_user_config_cache(username: str) -> None:
+    stale_keys = [cache_key for cache_key in _USER_CONFIG_CACHE if cache_key[0] == username]
+    for cache_key in stale_keys:
+        _USER_CONFIG_CACHE.pop(cache_key, None)
+
+
+def _prune_user_config_cache(now: float) -> None:
+    expired_keys = [
+        cache_key
+        for cache_key, (expires_at, _) in _USER_CONFIG_CACHE.items()
+        if expires_at <= now
+    ]
+    for cache_key in expired_keys:
+        _USER_CONFIG_CACHE.pop(cache_key, None)
+
+    while len(_USER_CONFIG_CACHE) > _USER_CONFIG_CACHE_MAX_ENTRIES:
+        oldest_key = next(iter(_USER_CONFIG_CACHE), None)
+        if oldest_key is None:
+            break
+        _USER_CONFIG_CACHE.pop(oldest_key, None)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -84,6 +120,12 @@ def get_user_config(username: str, password: str) -> UserConfig:
     ValueError  If the user does not exist.
     """
     key = authenticate(username, password)  # raises AuthError on failure
+    cache_key = (username, _fernet_key_fingerprint(key))
+    now = time.monotonic()
+    cached = _USER_CONFIG_CACHE.get(cache_key)
+    if cached and cached[0] > now:
+        return copy.deepcopy(cached[1])
+
     with get_connection() as conn:
         row = conn.execute(
             "SELECT config_encrypted FROM users WHERE username = ?",
@@ -91,7 +133,13 @@ def get_user_config(username: str, password: str) -> UserConfig:
         ).fetchone()
     if row is None:
         raise ValueError(f"User {username!r} not found.")
-    return decrypt_json(row["config_encrypted"], key)  # type: ignore[return-value]
+    config = decrypt_json(row["config_encrypted"], key)  # type: ignore[assignment]
+    _USER_CONFIG_CACHE[cache_key] = (
+        now + _USER_CONFIG_CACHE_TTL_SECONDS,
+        copy.deepcopy(config),
+    )
+    _prune_user_config_cache(now)
+    return config  # type: ignore[return-value]
 
 
 def set_user_config(username: str, password: str, config: UserConfig) -> None:
@@ -109,6 +157,7 @@ def set_user_config(username: str, password: str, config: UserConfig) -> None:
             "UPDATE users SET config_encrypted = ? WHERE username = ?",
             (token, username),
         )
+    _invalidate_user_config_cache(username)
 
 
 def update_user_config(username: str, password: str, updates: dict) -> UserConfig:
@@ -164,7 +213,9 @@ def resolve_config(
         DEFAULT_STORE_PROVIDER,
         GITHUB_TOKEN,
         NCBI_API_KEY,
+        SERPAPI_API_KEY,
         SEMANTIC_SCHOLAR_API_KEY,
+        TAVILY_API_KEY,
     )
 
     # ── Layer 1: environment defaults ─────────────────────────────────────────
@@ -203,6 +254,10 @@ def resolve_config(
         ext_def["SEMANTIC_SCHOLAR_API_KEY"] = SEMANTIC_SCHOLAR_API_KEY
     if NCBI_API_KEY:
         ext_def["NCBI_API_KEY"] = NCBI_API_KEY
+    if TAVILY_API_KEY:
+        ext_def["TAVILY_API_KEY"] = TAVILY_API_KEY
+    if SERPAPI_API_KEY:
+        ext_def["SERPAPI_API_KEY"] = SERPAPI_API_KEY
     if GITHUB_TOKEN:
         ext_def["GITHUB_TOKEN"] = GITHUB_TOKEN
     if ext_def:

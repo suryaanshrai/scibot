@@ -85,6 +85,10 @@ class GetDataInput(BaseModel):
         default=None,
         description="scibot password — required for mongodb/postgres to decrypt config.",
     )
+    config_override: dict | None = Field(
+        default=None,
+        description="Internal chat-level config override.",
+    )
 
 
 # ── Security helpers ──────────────────────────────────────────────────────────
@@ -125,10 +129,15 @@ def _load_json(file_path: str, limit: int) -> pd.DataFrame:
     return df.head(limit)
 
 
-def _resolve_alias_creds(alias: str, username: str, password: str) -> dict:
-    """Look up ``data_source_creds[alias]`` from the user's encrypted config."""
-    from app.users.config import get_user_config
-    cfg = get_user_config(username, password)
+def _resolve_alias_creds(
+    alias: str,
+    username: str,
+    password: str,
+    config_override: dict | None = None,
+) -> dict:
+    """Look up ``data_source_creds[alias]`` from the effective config."""
+    from app.users.config import resolve_config
+    cfg = resolve_config(username, password, config_override)
     creds: dict = cfg.get("data_source_creds") or {}
     if alias not in creds:
         raise ValueError(
@@ -138,10 +147,17 @@ def _resolve_alias_creds(alias: str, username: str, password: str) -> dict:
     return creds[alias]
 
 
-def _load_mongodb(alias: str, mongo_filter: dict | None, limit: int, username: str, password: str) -> pd.DataFrame:
+def _load_mongodb(
+    alias: str,
+    mongo_filter: dict | None,
+    limit: int,
+    username: str,
+    password: str,
+    config_override: dict | None = None,
+) -> pd.DataFrame:
     import pymongo
 
-    creds = _resolve_alias_creds(alias, username, password)
+    creds = _resolve_alias_creds(alias, username, password, config_override)
     conn_str   = creds.get("connection_string") or creds.get("uri") or ""
     db_name    = creds.get("database") or creds.get("db") or ""
     coll_name  = creds.get("collection") or alias
@@ -165,10 +181,17 @@ def _load_mongodb(alias: str, mongo_filter: dict | None, limit: int, username: s
     return pd.DataFrame(records)
 
 
-def _load_postgres(alias: str, sql_query: str | None, limit: int, username: str, password: str) -> pd.DataFrame:
+def _load_postgres(
+    alias: str,
+    sql_query: str | None,
+    limit: int,
+    username: str,
+    password: str,
+    config_override: dict | None = None,
+) -> pd.DataFrame:
     from sqlalchemy import create_engine, text
 
-    creds      = _resolve_alias_creds(alias, username, password)
+    creds      = _resolve_alias_creds(alias, username, password, config_override)
     conn_str   = creds.get("connection_string") or creds.get("url") or ""
     table_name = creds.get("table") or alias
 
@@ -216,6 +239,7 @@ def get_data(
     limit: int | None = None,
     username: str | None = None,
     password: str | None = None,
+    config_override: dict | None = None,
 ) -> str:
     """
     Load data from a CSV file, JSON file, MongoDB collection, or PostgreSQL
@@ -246,14 +270,14 @@ def get_data(
                 return "Error: alias is required for source_type='mongodb'."
             if not (username and password):
                 return "Error: username and password are required for mongodb sources."
-            df = _load_mongodb(alias, mongo_filter, effective_limit, username, password)
+            df = _load_mongodb(alias, mongo_filter, effective_limit, username, password, config_override)
 
         elif source_type == "postgres":
             if not alias:
                 return "Error: alias is required for source_type='postgres'."
             if not (username and password):
                 return "Error: username and password are required for postgres sources."
-            df = _load_postgres(alias, sql_query, effective_limit, username, password)
+            df = _load_postgres(alias, sql_query, effective_limit, username, password, config_override)
 
         else:
             return f"Error: unsupported source_type {source_type!r}. Choose from: csv, json, mongodb, postgres."
