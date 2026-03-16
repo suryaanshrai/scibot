@@ -63,6 +63,6 @@ celery -A app.workers.ingestion_worker.celery_app worker -Q ingestion --pool=pre
 celery -A app.workers.agent_worker.celery_app worker -Q agent --pool=prefork -c 2 -l info --without-gossip --without-mingle
 
 # And finally, the frontend (this too in another terminal)
-cd frontend
+cd app/frontend
 npm i && npm run dev
 ```
