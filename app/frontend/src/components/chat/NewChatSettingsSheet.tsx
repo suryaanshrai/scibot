@@ -1,77 +1,57 @@
 import { useEffect, useState } from 'react'
 import { RotateCcw, Save } from 'lucide-react'
 import {
-  Sheet, SheetContent, SheetHeader, SheetTitle, SheetFooter,
+  Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle,
 } from '@/components/ui/sheet'
 import { Button } from '@/components/ui/button'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { LLMSettings } from '@/components/settings/LLMSettings'
 import { EmbeddingSettings } from '@/components/settings/EmbeddingSettings'
 import { StoreSettings } from '@/components/settings/StoreSettings'
 import { useAuthStore } from '@/stores/authStore'
 import { useConfigStore } from '@/stores/configStore'
-import { saveChatConfig } from '@/lib/api'
 import { normalizeUserConfig, type UserConfig } from '@/types/config'
 
-interface ChatSettingsSheetProps {
-  chatId: string
+interface NewChatSettingsSheetProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
-export function ChatSettingsSheet({ chatId, open, onOpenChange }: ChatSettingsSheetProps) {
-  const { username, authHeader, globalConfig, configOptions } = useAuthStore()
-  const { getChatConfig, setChatConfig, resetChatConfig } = useConfigStore()
-  const chatOverride = getChatConfig(chatId)
-
-  // Merge global → chat override as local editable state
-  const [local, setLocal] = useState<UserConfig>({
+function mergeConfig(globalConfig: UserConfig, override?: Partial<UserConfig>) {
+  return normalizeUserConfig({
     ...globalConfig,
-    ...chatOverride,
-    llm: { ...globalConfig.llm, ...(chatOverride.llm ?? {}) },
-    embedding: { ...globalConfig.embedding, ...(chatOverride.embedding ?? {}) },
-    store: { ...globalConfig.store, ...(chatOverride.store ?? {}) },
+    ...override,
+    llm: { ...globalConfig.llm, ...(override?.llm ?? {}) },
+    embedding: { ...globalConfig.embedding, ...(override?.embedding ?? {}) },
+    store: { ...globalConfig.store, ...(override?.store ?? {}) },
   })
+}
+
+export function NewChatSettingsSheet({ open, onOpenChange }: NewChatSettingsSheetProps) {
+  const { globalConfig, configOptions } = useAuthStore()
+  const { pendingChatConfig, setPendingChatConfig, resetPendingChatConfig } = useConfigStore()
+
+  const [local, setLocal] = useState<UserConfig>(mergeConfig(globalConfig, pendingChatConfig))
 
   useEffect(() => {
-    setLocal({
-      ...globalConfig,
-      ...chatOverride,
-      llm: { ...globalConfig.llm, ...(chatOverride.llm ?? {}) },
-      embedding: { ...globalConfig.embedding, ...(chatOverride.embedding ?? {}) },
-      store: { ...globalConfig.store, ...(chatOverride.store ?? {}) },
-    })
-  }, [chatOverride, globalConfig, open])
+    setLocal(mergeConfig(globalConfig, pendingChatConfig))
+  }, [globalConfig, open, pendingChatConfig])
 
   const patch = (key: keyof UserConfig, updates: unknown) => {
-    setLocal((c) => ({ ...c, [key]: { ...(c[key] as object), ...(updates as object) } }))
+    setLocal((config) => ({
+      ...config,
+      [key]: { ...(config[key] as object), ...(updates as object) },
+    }))
   }
 
-  const handleSave = async () => {
-    if (!username || !authHeader) return
-    const updated = await saveChatConfig({ username, authHeader }, chatId, local)
-    const nextOverride = updated.config_override ?? local
-    setChatConfig(chatId, nextOverride)
-    setLocal(normalizeUserConfig({
-      ...globalConfig,
-      ...nextOverride,
-      llm: { ...globalConfig.llm, ...(nextOverride.llm ?? {}) },
-      embedding: { ...globalConfig.embedding, ...(nextOverride.embedding ?? {}) },
-      store: { ...globalConfig.store, ...(nextOverride.store ?? {}) },
-    }))
+  const handleSave = () => {
+    setPendingChatConfig(local)
     onOpenChange(false)
   }
 
-  const handleReset = async () => {
-    if (!username || !authHeader) return
-    const updated = await saveChatConfig({ username, authHeader }, chatId, {})
-    const nextOverride = updated.config_override ?? {}
-    if (Object.keys(nextOverride).length === 0) {
-      resetChatConfig(chatId)
-    } else {
-      setChatConfig(chatId, nextOverride)
-    }
+  const handleReset = () => {
+    resetPendingChatConfig()
     setLocal({ ...globalConfig })
   }
 
@@ -79,9 +59,9 @@ export function ChatSettingsSheet({ chatId, open, onOpenChange }: ChatSettingsSh
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full sm:max-w-md flex flex-col p-0">
         <SheetHeader className="px-6 pt-6 pb-3 border-b">
-          <SheetTitle>Chat Settings</SheetTitle>
+          <SheetTitle>New Chat Settings</SheetTitle>
           <p className="text-xs text-muted-foreground">
-            Overrides global defaults for this chat only.
+            Choose overrides that will be applied when this chat is created.
           </p>
         </SheetHeader>
 

@@ -6,7 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from celery.result import AsyncResult
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 
 from app.api.deps import AuthUser, get_current_user
 from app.api.models import (
@@ -88,6 +88,20 @@ def _build_detail(data: dict, task_status: str | None = None) -> CollectionDetai
         ingestion_task_id=data.get("ingestion_task_id"),
         ingestion_task_status=task_status,
     )
+
+
+def _build_ingest_status(task_id: str) -> IngestStatusResponse:
+    r = AsyncResult(task_id, app=ingestion_celery_app)
+    task_status = r.status.lower()
+    result_data = None
+    error = None
+
+    if r.status == "SUCCESS":
+        result_data = r.result if isinstance(r.result, dict) else {"raw": str(r.result)}
+    elif r.status == "FAILURE":
+        error = str(r.result)
+
+    return IngestStatusResponse(task_id=task_id, status=task_status, result=result_data, error=error)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -246,25 +260,18 @@ async def trigger_ingest(
 @router.get("/{name}/ingest-status", response_model=IngestStatusResponse)
 async def get_ingest_status(
     name: str,
+    task_id: str | None = Query(default=None),
     user: AuthUser = Depends(get_current_user),
 ) -> IngestStatusResponse:
     try:
         data = await asyncio.to_thread(col_get, user.username, name)
     except KeyError:
+        if task_id:
+            return _build_ingest_status(task_id)
         raise HTTPException(status_code=404, detail=f"Collection '{name}' not found")
 
-    task_id = data.get("ingestion_task_id")
-    if not task_id:
+    effective_task_id = data.get("ingestion_task_id") or task_id
+    if not effective_task_id:
         return IngestStatusResponse(task_id="", status="not_started")
 
-    r = AsyncResult(task_id, app=ingestion_celery_app)
-    task_status = r.status.lower()
-    result_data = None
-    error = None
-
-    if r.status == "SUCCESS":
-        result_data = r.result if isinstance(r.result, dict) else {"raw": str(r.result)}
-    elif r.status == "FAILURE":
-        error = str(r.result)
-
-    return IngestStatusResponse(task_id=task_id, status=task_status, result=result_data, error=error)
+    return _build_ingest_status(effective_task_id)

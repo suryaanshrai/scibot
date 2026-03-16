@@ -34,8 +34,16 @@ released.  Subscribers should close their listener after receiving it.
 
 Start the worker
 ----------------
+On Windows use ``--pool=solo`` to avoid ``billiard`` child-process failures.
+
     celery -A app.workers.agent_worker.celery_app worker \\
-        -Q agent -c 2 -l info \\
+        -Q agent --pool=solo -l info \
+        --without-gossip --without-mingle
+
+On Linux / Docker you can use prefork concurrency instead:
+
+    celery -A app.workers.agent_worker.celery_app worker \
+        -Q agent --pool=prefork -c 2 -l info \
         --without-gossip --without-mingle
 """
 
@@ -49,10 +57,41 @@ from typing import Any
 
 from celery import Celery
 from celery.utils.log import get_task_logger
+from langchain_core.messages import AIMessage
 
 from app.config.settings import REDIS_AGENT_URL
 
 logger = get_task_logger(__name__)
+
+
+def _normalize_answer_text(answer: str) -> str:
+    """Collapse checker-style JSON payloads into plain answer text."""
+    text = answer.strip()
+    if not text:
+        return ""
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end <= start:
+        return text
+
+    try:
+        payload = json.loads(text[start:end + 1])
+    except Exception:
+        return text
+
+    if not isinstance(payload, dict) or "corrected_answer" not in payload:
+        return text
+
+    corrected = str(payload.get("corrected_answer") or "").strip()
+    flags = [str(flag) for flag in (payload.get("flags") or []) if str(flag).strip()]
+    notes = f"\n\n> **Checker flags**: {'; '.join(flags)}" if flags else ""
+
+    if corrected:
+        return corrected + notes
+    if flags:
+        return notes.lstrip()
+    return text
 
 
 def _is_graph_recursion_error(exc: Exception) -> bool:
@@ -106,6 +145,7 @@ async def _run_agent_async(
     thread_id: str,
     task_id: str,
     config_override: dict | None = None,
+    active_collection_name: str | None = None,
 ) -> dict:
     """
     Core async implementation.  Creates a per-task Redis pub/sub publisher,
@@ -137,6 +177,7 @@ async def _run_agent_async(
                 password=password,
                 checkpointer=checkpointer,
                 config_override=config_override,
+                active_collection_name=active_collection_name,
             )
 
             token_buffer: list[str] = []
@@ -155,11 +196,19 @@ async def _run_agent_async(
             # calls from the same thread as the running event loop.
             source_records: list[dict] = []
             state = await agent.graph.aget_state(agent._config(thread_id))
+            final_ai_content = ""
             if state and hasattr(state, "values"):
                 for rec in state.values.get("source_records", []):
                     source_records.append(dataclasses.asdict(rec))
+                final_messages = state.values.get("messages", [])
+                last_ai = next(
+                    (msg for msg in reversed(final_messages) if isinstance(msg, AIMessage)),
+                    None,
+                )
+                if last_ai and isinstance(last_ai.content, str):
+                    final_ai_content = last_ai.content
 
-            answer = "".join(token_buffer)
+            answer = _normalize_answer_text(final_ai_content or "".join(token_buffer))
             result = {
                 "answer": answer,
                 "thread_id": thread_id,
@@ -214,6 +263,7 @@ def task_run_agent(
     query: str,
     thread_id: str = "default",
     config_override: dict | None = None,
+    active_collection_name: str | None = None,
 ) -> dict:
     """
     Run the SciBot agent for a single query turn.
@@ -261,6 +311,7 @@ def task_run_agent(
             thread_id=thread_id,
             task_id=task_id,
             config_override=config_override,
+            active_collection_name=active_collection_name,
         )
     )
 
@@ -288,6 +339,7 @@ def task_resume_agent(
     password: str,
     thread_id: str,
     response: Any,
+    active_collection_name: str | None = None,
 ) -> dict:
     """
     Resume an interrupted agent run (HITL approval gate).
@@ -326,6 +378,7 @@ def task_resume_agent(
                     username=username,
                     password=password,
                     checkpointer=checkpointer,
+                    active_collection_name=active_collection_name,
                 )
 
                 agent_response = await agent.resume(

@@ -1,5 +1,6 @@
 import { generateId } from '@/lib/utils'
 import type { ChatMeta, HITLPayload, Message, SourceRecord, SSEEvent } from '@/types/chat'
+import type { CollectionDetail } from '@/types/collections'
 import type { ConfigOptions, UserConfig } from '@/types/config'
 import type { SourceEntry } from '@/types/sources'
 import { EMPTY_CONFIG_OPTIONS, normalizeUserConfig } from '@/types/config'
@@ -52,6 +53,21 @@ interface SourceBuildResult {
   files: File[]
   unsupported: string[]
   configOverride?: Partial<UserConfig>
+}
+
+interface IngestTaskResponse {
+  task_id: string
+}
+
+interface CollectionDetailResponse {
+  collection_name: string
+  username: string
+  created_at: string
+  updated_at: string
+  sources: CollectionDetail['sources']
+  vector_collection?: string | null
+  ingestion_task_id?: string | null
+  ingestion_task_status?: string | null
 }
 
 function basicAuthHeader(username: string, password: string) {
@@ -124,6 +140,19 @@ function mapMessage(chatId: string, message: {
     sources: message.source_records ?? undefined,
     interrupted: message.interrupted,
     status: message.status,
+  }
+}
+
+function mapCollectionDetail(detail: CollectionDetailResponse): CollectionDetail {
+  return {
+    collectionName: detail.collection_name,
+    username: detail.username,
+    createdAt: detail.created_at,
+    updatedAt: detail.updated_at,
+    sources: detail.sources ?? {},
+    vectorCollection: detail.vector_collection ?? null,
+    ingestionTaskId: detail.ingestion_task_id ?? null,
+    ingestionTaskStatus: detail.ingestion_task_status ?? null,
   }
 }
 
@@ -265,11 +294,12 @@ function compactBuckets(buckets: SourceBuckets) {
   }
 }
 
-async function waitForIngest(auth: AuthSession, collectionName: string) {
+async function waitForIngest(auth: AuthSession, collectionName: string, taskId?: string) {
   const startedAt = Date.now()
+  const params = taskId ? `?task_id=${encodeURIComponent(taskId)}` : ''
   while (Date.now() - startedAt < INGEST_TIMEOUT_MS) {
     const status = await apiRequest<{ status: string; error?: string | null }>(
-      `/collections/${encodeURIComponent(collectionName)}/ingest-status`,
+      `/collections/${encodeURIComponent(collectionName)}/ingest-status${params}`,
       {},
       auth
     )
@@ -297,25 +327,25 @@ async function createOrUpdateCollectionFromSources(
 
   if (collectionName) {
     if (Object.keys(compact).length) {
-      await apiRequest(`/collections/${encodeURIComponent(name)}`, {
+      const response = await apiRequest<IngestTaskResponse>(`/collections/${encodeURIComponent(name)}`, {
         method: 'PATCH',
         body: JSON.stringify({ sources: compact, ...(configOverride ? { config: configOverride } : {}) }),
       }, auth)
-      await waitForIngest(auth, name)
+      await waitForIngest(auth, name, response.task_id)
     }
   } else {
-    await apiRequest('/collections', {
+    const response = await apiRequest<IngestTaskResponse>('/collections', {
       method: 'POST',
       body: JSON.stringify({ collection_name: name, sources: compact, ...(configOverride ? { config: configOverride } : {}) }),
     }, auth)
-    await waitForIngest(auth, name)
+    await waitForIngest(auth, name, response.task_id)
   }
 
   if (files.length) {
     const form = new FormData()
     for (const file of files) form.append('files', file)
-    await apiRequest(`/collections/${encodeURIComponent(name)}/files`, { method: 'POST', body: form }, auth)
-    await waitForIngest(auth, name)
+    const response = await apiRequest<IngestTaskResponse>(`/collections/${encodeURIComponent(name)}/files`, { method: 'POST', body: form }, auth)
+    await waitForIngest(auth, name, response.task_id)
   }
 
   return { collectionName: name, configOverride }
@@ -381,6 +411,11 @@ export async function getChats(auth: AuthSession): Promise<ChatMeta[]> {
     message_count?: number
   }>>('/chats', {}, auth)
   return data.map(mapChatMeta)
+}
+
+export async function getCollectionDetail(auth: AuthSession, collectionName: string): Promise<CollectionDetail> {
+  const data = await apiRequest<CollectionDetailResponse>(`/collections/${encodeURIComponent(collectionName)}`, {}, auth)
+  return mapCollectionDetail(data)
 }
 
 export async function createChat(auth: AuthSession, input: ChatWithSourcesInput = {}): Promise<ChatMeta> {

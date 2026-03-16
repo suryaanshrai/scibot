@@ -1,26 +1,29 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Bot, Loader2, Plus, Rocket } from 'lucide-react'
+import { Bot, Loader2, Plus, Rocket, SlidersHorizontal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { SourceForm } from '@/components/sources/SourceForm'
 import { MessageList } from '@/components/chat/MessageList'
 import { ChatInput } from '@/components/chat/ChatInput'
 import { ChatHeader } from '@/components/chat/ChatHeader'
+import { CollectionSourcesRail } from '@/components/chat/CollectionSourcesRail'
+import { NewChatSettingsSheet } from '@/components/chat/NewChatSettingsSheet'
 import { SourcesPanel } from '@/components/chat/SourcesPanel'
 import { HITLDialog } from '@/components/chat/HITLDialog'
 import { useChatStore } from '@/stores/chatStore'
 import { useAuthStore } from '@/stores/authStore'
 import { useConfigStore } from '@/stores/configStore'
-import { addSourcesToChat, createChat as createChatRequest, getChatHistory, resumeChat, sendMessage } from '@/lib/api'
+import { addSourcesToChat, createChat as createChatRequest, getChatHistory, getCollectionDetail, resumeChat, sendMessage } from '@/lib/api'
 import { generateId } from '@/lib/utils'
+import type { CollectionDetail } from '@/types/collections'
 import type { SourceEntry } from '@/types/sources'
 import type { HITLPayload, Message } from '@/types/chat'
 
 export function ChatPage() {
   const { chatId } = useParams<{ chatId?: string }>()
   const navigate = useNavigate()
-  const { username, authHeader } = useAuthStore()
-  const { chatConfigs, getChatConfig, setChatConfig } = useConfigStore()
+  const { username, authHeader, globalConfig } = useAuthStore()
+  const { chatConfigs, getChatConfig, setChatConfig, pendingChatConfig, resetPendingChatConfig } = useConfigStore()
 
   const {
     chats, messages: allMessages, chatsLoaded, createChat, addMessage,
@@ -34,8 +37,16 @@ export function ChatPage() {
   const [busy, setBusy] = useState(false)
   const [pageError, setPageError] = useState<string | null>(null)
   const [hitlPayload, setHitlPayload] = useState<HITLPayload | null>(null)
+  const [newChatSettingsOpen, setNewChatSettingsOpen] = useState(false)
+  const [collectionRailOpen, setCollectionRailOpen] = useState(true)
+  const [collectionDetail, setCollectionDetail] = useState<CollectionDetail | null>(null)
+  const [collectionLoading, setCollectionLoading] = useState(false)
+  const [collectionError, setCollectionError] = useState<string | null>(null)
 
-  const auth = username && authHeader ? { username, authHeader } : null
+  const auth = useMemo(() => {
+    if (!username || !authHeader) return null
+    return { username, authHeader }
+  }, [authHeader, username])
 
   // Sync localSources from pendingSources when navigating to /chat (new chat)
   useEffect(() => {
@@ -47,8 +58,11 @@ export function ChatPage() {
   const messages = chatId ? (allMessages[chatId] ?? []) : []
   const isNewChat = !chatId
   const activeChat = chatId ? chats.find((c) => c.chatId === chatId) : null
+  const activeCollectionName = activeChat?.collectionName?.trim() ?? ''
   const hasCachedHistory = Boolean(chatId && allMessages[chatId])
   const hasCachedConfig = Boolean(chatId && Object.prototype.hasOwnProperty.call(chatConfigs, chatId))
+  const pendingLLM = pendingChatConfig.llm?.model ?? globalConfig.llm.model
+  const pendingProvider = pendingChatConfig.llm?.provider ?? globalConfig.llm.provider
 
   useEffect(() => {
     if (!auth || !chatId) return
@@ -82,14 +96,58 @@ export function ChatPage() {
     upsertChat,
   ])
 
+  useEffect(() => {
+    if (!chatId || !auth) {
+      setCollectionDetail(null)
+      setCollectionError(null)
+      setCollectionLoading(false)
+      return
+    }
+
+    if (!activeCollectionName) {
+      setCollectionDetail(null)
+      setCollectionError(null)
+      setCollectionLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setCollectionLoading(true)
+    setCollectionError(null)
+
+    void getCollectionDetail(auth, activeCollectionName)
+      .then((detail) => {
+        if (cancelled) return
+        setCollectionDetail(detail)
+      })
+      .catch((error) => {
+        if (cancelled) return
+        console.error(error)
+        setCollectionDetail(null)
+        setCollectionError(error instanceof Error ? error.message : 'Failed to load attached sources')
+      })
+      .finally(() => {
+        if (cancelled) return
+        setCollectionLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeCollectionName, auth, chatId])
+
   const handleStartChat = useCallback(async () => {
     if (!auth) return
     setBusy(true)
     setPageError(null)
     try {
-      const chat = await createChatRequest(auth, { sources: localSources })
+      const chat = await createChatRequest(auth, { sources: localSources, configOverride: pendingChatConfig })
       createChat(chat)
+      if (Object.keys(pendingChatConfig).length) {
+        setChatConfig(chat.chatId, pendingChatConfig)
+      }
       clearPendingSources()
+      resetPendingChatConfig()
       setLocalSources([])
       navigate(`/chat/${chat.chatId}`)
     } catch (error) {
@@ -97,7 +155,7 @@ export function ChatPage() {
     } finally {
       setBusy(false)
     }
-  }, [auth, clearPendingSources, createChat, localSources, navigate])
+  }, [auth, clearPendingSources, createChat, localSources, navigate, pendingChatConfig, resetPendingChatConfig, setChatConfig])
 
   const handleSend = useCallback((query: string) => {
     if (!chatId || !auth) return
@@ -209,6 +267,29 @@ export function ChatPage() {
 
       {/* Empty state — new chat */}
       {isNewChat && (
+        <>
+        <div className="flex items-center h-14 border-b px-4 gap-3 bg-background">
+          <div className="flex-1 min-w-0">
+            <span className="font-medium text-sm truncate">New chat</span>
+          </div>
+
+          <div className="hidden sm:flex items-center">
+            <span className="inline-flex items-center rounded-md bg-secondary px-2 py-1 text-[11px] text-secondary-foreground">
+              {pendingProvider}/{pendingLLM}
+            </span>
+          </div>
+
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            onClick={() => setNewChatSettingsOpen(true)}
+            title="Chat settings"
+          >
+            <SlidersHorizontal size={16} />
+          </Button>
+        </div>
+
         <div className="flex-1 overflow-y-auto p-6">
           <div className="mx-auto flex min-h-full w-full max-w-xl items-center justify-center py-6">
             <div className="w-full space-y-6">
@@ -252,9 +333,13 @@ export function ChatPage() {
                   setBusy(true)
                   setPageError(null)
                   try {
-                    const chat = await createChatRequest(auth)
+                    const chat = await createChatRequest(auth, { configOverride: pendingChatConfig })
                     createChat(chat)
+                    if (Object.keys(pendingChatConfig).length) {
+                      setChatConfig(chat.chatId, pendingChatConfig)
+                    }
                     clearPendingSources()
+                    resetPendingChatConfig()
                     setLocalSources([])
                     navigate(`/chat/${chat.chatId}`)
                   } catch (error) {
@@ -271,28 +356,40 @@ export function ChatPage() {
             </div>
           </div>
         </div>
+        <NewChatSettingsSheet open={newChatSettingsOpen} onOpenChange={setNewChatSettingsOpen} />
+        </>
       )}
 
       {/* Active chat messages */}
       {chatId && (
-        <>
-          {messages.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center flex-col gap-3 text-muted-foreground">
-              <Rocket size={32} />
-              <p className="text-sm">Send a message to begin</p>
-              {pageError && <p className="text-sm text-destructive">{pageError}</p>}
-            </div>
-          ) : (
-            <MessageList messages={messages} />
-          )}
+        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+          <div className="flex min-h-0 flex-1 flex-col">
+            {messages.length === 0 ? (
+              <div className="flex flex-1 items-center justify-center flex-col gap-3 text-muted-foreground">
+                <Rocket size={32} />
+                <p className="text-sm">Send a message to begin</p>
+                {pageError && <p className="text-sm text-destructive">{pageError}</p>}
+              </div>
+            ) : (
+              <MessageList messages={messages} />
+            )}
 
-          <ChatInput
-            onSend={handleSend}
-            onToggleSources={() => setSourcesOpen(true)}
-            disabled={busy}
-            sending={sending}
+            <ChatInput
+              onSend={handleSend}
+              onToggleSources={() => setSourcesOpen(true)}
+              disabled={busy}
+              sending={sending}
+            />
+          </div>
+
+          <CollectionSourcesRail
+            collection={collectionDetail}
+            loading={collectionLoading}
+            error={collectionError}
+            open={collectionRailOpen}
+            onToggle={() => setCollectionRailOpen((open) => !open)}
           />
-        </>
+        </div>
       )}
 
       {/* Sources panel (slide-in from right) */}

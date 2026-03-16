@@ -4,7 +4,8 @@ A multi-agent multi-modal RAG application for scientific users looking for a too
 Support for multiple data sources at minimal costs, ingestions and agents run separately in background workers, to ensure low congestion on the API server, and better process management.
 
 <!-- SCREENSHOTS -->
-
+![](screenshots/Screenshot%202026-03-16%20121702.png)
+[More Screenshots here](screenshots/)
 ## Quick start
 simply do a `docker compose up` in the root of the project and access the frontend at `http://localhost:8080/`. You can also build the image and run the container separately if you want to, or refer the troubleshooting section. 
 

@@ -28,8 +28,17 @@ and then re-ingesting.
 
 Start the worker
 ----------------
+On Windows use ``--pool=solo`` to avoid ``billiard`` shared-memory /
+``WinError 5`` failures.
+
     celery -A app.workers.ingestion_worker.celery_app worker \\
-        -Q ingestion -c 4 -l info \\
+        -Q ingestion --pool=solo -l info \
+        --without-gossip --without-mingle
+
+On Linux / Docker you can use prefork concurrency instead:
+
+    celery -A app.workers.ingestion_worker.celery_app worker \
+        -Q ingestion --pool=prefork -c 4 -l info \
         --without-gossip --without-mingle
 """
 

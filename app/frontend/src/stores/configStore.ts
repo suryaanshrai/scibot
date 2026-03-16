@@ -3,15 +3,19 @@ import type { UserConfig } from '@/types/config'
 
 interface ConfigState {
   chatConfigs: Record<string, Partial<UserConfig>>
+  pendingChatConfig: Partial<UserConfig>
 
   getChatConfig: (chatId: string) => Partial<UserConfig>
   setChatConfig: (chatId: string, config: Partial<UserConfig>) => void
   updateChatConfig: (chatId: string, updates: Partial<UserConfig>) => void
   resetChatConfig: (chatId: string) => void
+  setPendingChatConfig: (config: Partial<UserConfig>) => void
+  resetPendingChatConfig: () => void
 }
 
 export const useConfigStore = create<ConfigState>((set, get) => ({
   chatConfigs: {},
+  pendingChatConfig: {},
 
   getChatConfig: (chatId) => get().chatConfigs[chatId] ?? {},
 
@@ -29,4 +33,8 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
       delete next[chatId]
       return { chatConfigs: next }
     }),
+
+  setPendingChatConfig: (config) => set({ pendingChatConfig: config }),
+
+  resetPendingChatConfig: () => set({ pendingChatConfig: {} }),
 }))

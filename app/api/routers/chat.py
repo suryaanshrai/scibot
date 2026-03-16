@@ -261,7 +261,7 @@ async def send_message(
     try:
         task = await asyncio.to_thread(
             task_run_agent.delay,
-            user.username, user.password, req.content, chat_id, effective_config or None,
+            user.username, user.password, req.content, chat_id, effective_config or None, chat.get("collection_name"),
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Agent broker unavailable: {exc}")
@@ -300,7 +300,7 @@ async def resume_agent(
     try:
         task = await asyncio.to_thread(
             task_resume_agent.delay,
-            user.username, user.password, chat_id, req.response,
+            user.username, user.password, chat_id, req.response, chat.get("collection_name"),
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Agent broker unavailable: {exc}")

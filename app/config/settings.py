@@ -40,7 +40,7 @@ IBM_PROJECT_ID = get_env("IBM_PROJECT_ID")
 IBM_URL = get_env("IBM_URL", "https://us-south.ml.cloud.ibm.com")
 
 # ── Ollama ─────────────────────────────────────────────────────────────────────
-OLLAMA_BASE_URL = get_env("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_BASE_URL = get_env("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
 # ── Chroma store ──────────────────────────────────────────────────────────────
 CHROMA_URL = get_env("CHROMA_URL")
@@ -83,9 +83,9 @@ GITHUB_TOKEN = get_env("GITHUB_TOKEN")
 
 # ── Background workers (Redis brokers) ───────────────────────────────────────
 # Separate Redis instances keep ingestion and agent queues isolated
-REDIS_INGESTION_URL = get_env("REDIS_INGESTION_URL", "redis://localhost:6379/0")
-REDIS_AGENT_URL = get_env("REDIS_AGENT_URL", "redis://localhost:6380/0")
+REDIS_INGESTION_URL = get_env("REDIS_INGESTION_URL", "redis://127.0.0.1:6379/0")
+REDIS_AGENT_URL = get_env("REDIS_AGENT_URL", "redis://127.0.0.1:6380/0")
 
 # ── Chat history (MongoDB via Motor) ─────────────────────────────────────────
-MONGODB_CHAT_URL = get_env("MONGODB_CHAT_URL", "mongodb://localhost:27017")
+MONGODB_CHAT_URL = get_env("MONGODB_CHAT_URL", "mongodb://127.0.0.1:27017")
 MONGODB_CHAT_DB_NAME = get_env("MONGODB_CHAT_DB_NAME", "scibot_chats")

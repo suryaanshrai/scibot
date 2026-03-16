@@ -26,6 +26,7 @@ from typing import Any, AsyncIterator, Literal, Sequence
 
 from langchain_core.messages import (
     AIMessage,
+    AIMessageChunk,
     BaseMessage,
     HumanMessage,
     RemoveMessage,
@@ -76,6 +77,9 @@ Citation rules (MANDATORY):
    sources you actually cited.
 
 Tool selection guidance:
+- If an active chat collection is provided in context, treat it as the default
+    target for ambiguous follow-up questions such as "what is the paper about?"
+    or "summarize this" unless the user explicitly switches collections.
 - For simple lookups use retrieval tools directly.
 - For short reading-list questions such as "which papers should I read" or
     "papers related to X", prefer direct literature lookup and answer with a
@@ -159,47 +163,45 @@ def _build_collection_catalog(username: str) -> str:
         if not summaries:
             return ""
         lines = [
-            "## Your Knowledge Collections",
-            "Search these via `search_storage` using the exact `collection_name` shown.",
+            "## Collection Routing Context",
+            "Internal context only. Do not quote or reproduce this catalog verbatim to the user.",
+            "Use it only to choose the correct `collection_name` for `search_storage`.",
             "",
         ]
         for summary in summaries:
             cname = summary["collection_name"]
             counts = summary.get("source_counts", {})
             total = sum(counts.values())
-            lines.append(f"**{cname}** ({total} source{'s' if total != 1 else ''}):")
-            try:
-                data = load_collection(username, cname)
-            except Exception:  # noqa: BLE001
-                data = {}
-            for p in (data.get("papers") or []):
-                title = p.get("title") or p.get("source_url", "")
-                year  = p.get("year")
-                desc  = p.get("description", "")
-                label = f"{title}" + (f" ({year})" if year else "")
-                lines.append(f"  [{p.get('source_type', 'paper')}] {label}")
-                if desc:
-                    lines.append(f"    ↳ {desc}")
-            for y in (data.get("youtube") or []):
-                lines.append(f"  [youtube] {y.get('title') or y.get('url', '')}")
-                if y.get("description"):
-                    lines.append(f"    ↳ {y['description']}")
-            for g in (data.get("github_repos") or []):
-                lines.append(f"  [github] {g.get('url', '')}")
-                if g.get("description"):
-                    lines.append(f"    ↳ {g['description']}")
-            for w in (data.get("webpages") or []):
-                lines.append(f"  [webpage] {w.get('url', '')}")
-                if w.get("description"):
-                    lines.append(f"    ↳ {w['description']}")
-            for v in (data.get("videos") or []):
-                lines.append(f"  [video] {v.get('description') or v.get('file_path', '')}")
-            for a in (data.get("audios") or []):
-                lines.append(f"  [audio] {a.get('description') or a.get('file_path', '')}")
-            for i in (data.get("images") or []):
-                lines.append(f"  [image] {i.get('description') or i.get('file_path', '')}")
-            lines.append("")
-        lines.append("Pass `collection_name=` to `search_storage` to target a specific collection.")
+            lines.append(f"- {cname} ({total} source{'s' if total != 1 else ''})")
+        lines.append("")
+        lines.append("When the user asks to list collections, summarize naturally instead of copying this block.")
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _build_active_collection_context(username: str, collection_name: str) -> str:
+    """Build a compact context block for the chat's active collection."""
+    try:
+        from app.users.collections_db import load_collection  # noqa: PLC0415
+
+        data = load_collection(username, collection_name) or {}
+        source_labels: list[str] = []
+        for paper in (data.get("papers") or [])[:6]:
+            title = paper.get("title") or paper.get("source_url") or "paper"
+            source_labels.append(str(title))
+        for video in (data.get("youtube") or [])[:4]:
+            title = video.get("title") or video.get("url") or "youtube"
+            source_labels.append(str(title))
+
+        lines = [
+            "## Active Chat Collection",
+            f"Default collection for this chat: `{collection_name}`.",
+            "For ambiguous follow-up questions, call `search_storage` on this collection before answering.",
+        ]
+        if source_labels:
+            lines.append("Known items in this collection:")
+            lines.extend(f"- {label}" for label in source_labels)
         return "\n".join(lines)
     except Exception:  # noqa: BLE001
         return ""
@@ -424,6 +426,7 @@ async def _recall_memories(
     SystemMessage so the model has cross-session context.
     """
     username = (config.get("configurable") or {}).get("username", "")
+    active_collection_name = (config.get("configurable") or {}).get("active_collection_name", "")
     catalog = _build_collection_catalog(username) if username else ""
 
     if not username or not state["messages"]:
@@ -458,6 +461,10 @@ async def _recall_memories(
     )
 
     context_parts: list[str] = []
+    if active_collection_name:
+        active_context = _build_active_collection_context(username, active_collection_name)
+        if active_context:
+            context_parts.append(active_context)
     if catalog:
         context_parts.append(catalog)
     if memories_text:
@@ -890,10 +897,12 @@ class OrchestratorAgent:
         checkpointer: Any = None,
         store: Any = None,
         config_override: dict | None = None,
+        active_collection_name: str | None = None,
     ) -> None:
         self.username = username
         self._password = password
         self._config_override = config_override
+        self._active_collection_name = active_collection_name
         self._checkpointer = checkpointer or MemorySaver()
         self._store = store or InMemoryStore()
         self.graph = build_graph(
@@ -903,12 +912,13 @@ class OrchestratorAgent:
     # ── Config helpers ───────────────────────────────────────────────────────
 
     def _config(self, thread_id: str) -> dict:
-        return {
-            "configurable": {
-                "thread_id": f"{self.username}:{thread_id}",
-                "username": self.username,
-            }
+        configurable = {
+            "thread_id": f"{self.username}:{thread_id}",
+            "username": self.username,
         }
+        if self._active_collection_name:
+            configurable["active_collection_name"] = self._active_collection_name
+        return {"configurable": configurable}
 
     async def afallback_answer(self, query: str, reason: str | None = None) -> str:
         from app.agent.researcher import ResearcherAgent
@@ -987,8 +997,14 @@ class OrchestratorAgent:
             if kind == "messages":
                 # data is (message_chunk, metadata)
                 msg_chunk = data[0] if isinstance(data, tuple) else data
+                metadata = data[1] if isinstance(data, tuple) and len(data) > 1 else {}
                 content = getattr(msg_chunk, "content", "")
-                if content and isinstance(content, str):
+                if (
+                    content
+                    and isinstance(content, str)
+                    and isinstance(msg_chunk, (AIMessage, AIMessageChunk))
+                    and metadata.get("langgraph_node") == "call_model"
+                ):
                     yield content
 
             elif kind == "updates":
