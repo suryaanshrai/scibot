@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from app.api.chat_db import get_chat_by_slug, get_messages, list_chats
+from app.api.chat_db import ChatDatabaseUnavailable, get_chat_by_slug, get_messages, list_chats
 from app.tools import build_tools
 from app.users.collections_db import list_collections as list_user_collections
 from app.users.collections_db import load_collection
@@ -92,10 +92,13 @@ def _resource(uri: str, name: str, description: str, contents: Any) -> dict[str,
 
 
 async def _user_resources(username: str) -> list[dict[str, Any]]:
-    chats, collections = await asyncio.gather(
-        list_chats(username),
-        asyncio.to_thread(list_user_collections, username),
-    )
+    try:
+        chats, collections = await asyncio.gather(
+            list_chats(username),
+            asyncio.to_thread(list_user_collections, username),
+        )
+    except ChatDatabaseUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return [
         _resource(
             f"scibot://users/{username}/chats",
@@ -113,11 +116,17 @@ async def _user_resources(username: str) -> list[dict[str, Any]]:
 
 
 async def _chat_resources(username: str, chat_name: str) -> list[dict[str, Any]]:
-    chat = await get_chat_by_slug(chat_name, username)
+    try:
+        chat = await get_chat_by_slug(chat_name, username)
+    except ChatDatabaseUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
-    messages = await get_messages(chat["chat_id"], limit=_MCP_MESSAGE_LIMIT)
+    try:
+        messages = await get_messages(chat["chat_id"], limit=_MCP_MESSAGE_LIMIT)
+    except ChatDatabaseUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     resources = [
         _resource(
             f"scibot://users/{username}/chats/{chat_name}/metadata",

@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # The lockfile currently resolves Linux torch wheels with CUDA runtime
 # dependencies. Skip those packages during uv sync, then install CPU-only
 # wheels once so the image never downloads the GPU stack.
-RUN /app/.venv/bin/pip install --no-cache-dir \
+RUN uv pip install --python /app/.venv/bin/python --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cpu \
     torch==${TORCH_VERSION} torchvision==${TORCHVISION_VERSION}
 

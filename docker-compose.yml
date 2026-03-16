@@ -8,7 +8,7 @@ services:
       - "6379:6379"
     volumes:
       - redis-ingestion-data:/data
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --protected-mode no
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -23,7 +23,8 @@ services:
       - "6380:6379"
     volumes:
       - redis-agent-data:/data
-    command: redis-server --appendonly yes
+    environment:
+      REDIS_ARGS: --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -42,7 +43,7 @@ services:
       IS_PERSISTENT: "TRUE"
       ANONYMIZED_TELEMETRY: "FALSE"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      test: ["CMD-SHELL", "bash -lc \"exec 3<>/dev/tcp/localhost/8000 && printf 'GET /api/v2/heartbeat HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '200' <&3\""]
       interval: 15s
       timeout: 5s
       retries: 5

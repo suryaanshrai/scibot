@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -14,15 +15,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api.chat_db import init_chat_db
+from app.api.chat_db import ChatDatabaseUnavailable, init_chat_db
 from app.api.routers import auth, chat, collections, config, mcp
 from app.users.database import init_db
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    await init_chat_db()
+    try:
+        await init_chat_db()
+    except ChatDatabaseUnavailable as exc:
+        logger.warning("Chat database initialization skipped: %s", exc)
     yield
 
 
@@ -34,7 +40,6 @@ api = FastAPI(
     title="SciBot API",
     version="1.0.0",
     description="AI-powered research assistant API",
-    lifespan=lifespan,
 )
 
 api.add_middleware(
@@ -59,7 +64,7 @@ async def health() -> dict:
 # ── Outer shell app ───────────────────────────────────────────────────────────
 # This is what uvicorn runs. The API lives at /api and the compiled frontend is
 # served at / when the build artifacts are present.
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 app.mount("/api", api)
 app.include_router(mcp.router, prefix="/mcp", tags=["mcp"])
 

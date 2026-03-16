@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Bot, Plus, Rocket } from 'lucide-react'
+import { Bot, Loader2, Plus, Rocket } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { SourceForm } from '@/components/sources/SourceForm'
 import { MessageList } from '@/components/chat/MessageList'
@@ -209,8 +209,9 @@ export function ChatPage() {
 
       {/* Empty state — new chat */}
       {isNewChat && (
-        <div className="flex-1 flex items-center justify-center p-6">
-          <div className="w-full max-w-xl space-y-6">
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="mx-auto flex min-h-full w-full max-w-xl items-center justify-center py-6">
+            <div className="w-full space-y-6">
             <div className="text-center space-y-2">
               <Bot size={40} className="mx-auto text-primary" />
               <h2 className="text-xl font-semibold">New research chat</h2>
@@ -226,8 +227,17 @@ export function ChatPage() {
                 onSubmit={handleStartChat}
                 submitLabel="Start Chat"
                 submitDisabled={busy}
+                submitLoading={busy}
+                submitLoadingLabel="Starting chat..."
               />
             </div>
+
+            {busy && (
+              <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                <Loader2 size={16} className="animate-spin" />
+                <span>Preparing sources and creating the chat. Large ingests can take a minute.</span>
+              </div>
+            )}
 
             {pageError && <p className="text-sm text-destructive text-center">{pageError}</p>}
 
@@ -244,6 +254,8 @@ export function ChatPage() {
                   try {
                     const chat = await createChatRequest(auth)
                     createChat(chat)
+                    clearPendingSources()
+                    setLocalSources([])
                     navigate(`/chat/${chat.chatId}`)
                   } catch (error) {
                     setPageError(error instanceof Error ? error.message : 'Failed to create chat')
@@ -255,6 +267,7 @@ export function ChatPage() {
                 <Plus size={14} className="mr-1" />
                 Skip sources and start chatting
               </Button>
+            </div>
             </div>
           </div>
         </div>
@@ -306,12 +319,14 @@ export function ChatPage() {
             }
             setLocalSources([])
             clearPendingSources()
+            setSourcesOpen(false)
           } catch (error) {
             setPageError(error instanceof Error ? error.message : 'Failed to add sources')
           } finally {
             setBusy(false)
           }
         }}
+        busy={busy}
         mode={chatId ? 'add' : 'new'}
       />
 

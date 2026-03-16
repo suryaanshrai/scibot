@@ -9,10 +9,19 @@ so that the orchestrator can delegate complex multi-source queries to it.
 
 from __future__ import annotations
 
+import asyncio
+import re
+
 from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
+
+try:
+    from langgraph.errors import GraphRecursionError
+except Exception:  # pragma: no cover - defensive fallback for older langgraph versions
+    class GraphRecursionError(RuntimeError):
+        pass
 
 from app.config.llm_model import get_llm
 from app.tools import build_tools
@@ -40,6 +49,44 @@ Output requirements:
 - Do NOT fabricate or hallucinate sources.
 - Stop when you have sufficient evidence (max 6 tool calls).
 """
+
+RESEARCHER_RECURSION_LIMIT = 9
+
+_READING_LIST_RE = re.compile(
+    r"(which|what|recommend|suggest|list|best|top).{0,40}(paper|papers|reading)|"
+    r"(paper|papers).{0,40}(should i read|to read|for reading|to understand|to learn|common to|related to)|"
+    r"reading list",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_BIOMEDICAL_RE = re.compile(
+    r"\b(pubmed|biomed|biomedical|clinical|disease|cancer|protein|gene|genomic|drug|patient|medical)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_reading_list_query(query: str) -> bool:
+    return bool(_READING_LIST_RE.search(query or ""))
+
+
+def _needs_pubmed(query: str) -> bool:
+    return bool(_BIOMEDICAL_RE.search(query or ""))
+
+
+def _stringify_content(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") if isinstance(item.get("text"), str) else ""
+                if text:
+                    parts.append(text)
+        return "\n".join(part for part in parts if part)
+    return str(content or "")
 
 # ---------------------------------------------------------------------------
 # Agent
@@ -72,6 +119,7 @@ class ResearcherAgent:
             "pubmed_search",
         }
         tools = [t for t in all_tools if t.name in researcher_tool_names]
+        self._tools_by_name = {tool.name: tool for tool in tools}
 
         # Build the agent graph using LangChain 1.x create_agent -------------
         # create_agent returns a compiled LangGraph StateGraph equivalent to
@@ -81,17 +129,94 @@ class ResearcherAgent:
             tools=tools,
             system_prompt=RESEARCHER_SYSTEM,
         )
-        # Each tool call occupies 2 steps (model + tool), so 6 tool calls ≈ 13.
-        self._run_config = {"recursion_limit": 13}
+        # Keep the sub-agent bounded tightly; simple reading-list queries take
+        # the direct fallback path below instead of spending multiple graph steps.
+        self._run_config = {"recursion_limit": RESEARCHER_RECURSION_LIMIT}
+
+    async def afallback_answer(self, query: str, reason: str | None = None) -> str:
+        sections: list[str] = []
+
+        arxiv_tool = self._tools_by_name.get("arxiv_search")
+        if arxiv_tool is not None:
+            try:
+                arxiv_result = await arxiv_tool.ainvoke({
+                    "query": query,
+                    "max_results": 5,
+                    "fetch_full": False,
+                })
+                if isinstance(arxiv_result, str) and arxiv_result.strip():
+                    sections.append("arXiv results:\n" + arxiv_result.strip())
+            except Exception as exc:
+                sections.append(f"arXiv results unavailable: {exc}")
+
+        if _needs_pubmed(query):
+            pubmed_tool = self._tools_by_name.get("pubmed_search")
+            if pubmed_tool is not None:
+                try:
+                    pubmed_result = await pubmed_tool.ainvoke({
+                        "query": query,
+                        "max_results": 5,
+                        "fetch_full": False,
+                    })
+                    if isinstance(pubmed_result, str) and pubmed_result.strip():
+                        sections.append("PubMed results:\n" + pubmed_result.strip())
+                except Exception as exc:
+                    sections.append(f"PubMed results unavailable: {exc}")
+
+        if not sections:
+            return (
+                "I could not complete the full research graph, and direct literature "
+                "search also failed. Please retry the question or narrow the topic."
+            )
+
+        prompt = (
+            "Prepare a concise reading list using only the papers present in the search "
+            "results below. Do not invent papers. Prefer canonical or foundational papers "
+            "when they are present.\n\n"
+            "Return:\n"
+            "1. A one-sentence overview.\n"
+            "2. Three to five recommended papers with title, year if available, a short "
+            "reason, and URL.\n"
+            "3. If appropriate, end with 'If you only read two:' and name the top two."
+        )
+
+        if reason:
+            prompt += f"\n\nContext: the full research graph hit its recursion limit ({reason})."
+
+        try:
+            response = await self.llm.ainvoke([
+                SystemMessage(content=prompt),
+                HumanMessage(
+                    content=(
+                        f"User question: {query}\n\n"
+                        f"Search results:\n\n{chr(10).join(sections)}"
+                    )
+                ),
+            ])
+
+            answer = _stringify_content(getattr(response, "content", "")).strip()
+            if answer:
+                return answer
+        except Exception:
+            pass
+
+        return "\n\n".join(sections)
 
     def run(self, query: str) -> str:
         """
         Run the researcher synchronously and return a formatted research summary.
         """
-        result = self._graph.invoke(
-            {"messages": [HumanMessage(content=query)]},
-            self._run_config,
-        )
+        if _looks_like_reading_list_query(query):
+            return asyncio.run(self.afallback_answer(query))
+
+        try:
+            result = self._graph.invoke(
+                {"messages": [HumanMessage(content=query)]},
+                self._run_config,
+            )
+        except GraphRecursionError as exc:
+            return asyncio.run(self.afallback_answer(query, reason=str(exc)))
+
         messages = result.get("messages") or []
         from langchain_core.messages import AIMessage
         last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
@@ -101,10 +226,17 @@ class ResearcherAgent:
         """
         Run the researcher asynchronously and return a formatted research summary.
         """
-        result = await self._graph.ainvoke(
-            {"messages": [HumanMessage(content=query)]},
-            self._run_config,
-        )
+        if _looks_like_reading_list_query(query):
+            return await self.afallback_answer(query)
+
+        try:
+            result = await self._graph.ainvoke(
+                {"messages": [HumanMessage(content=query)]},
+                self._run_config,
+            )
+        except GraphRecursionError as exc:
+            return await self.afallback_answer(query, reason=str(exc))
+
         messages = result.get("messages") or []
         from langchain_core.messages import AIMessage
         last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)

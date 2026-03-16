@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.api.chat_db import (
+    ChatDatabaseUnavailable,
     append_message,
     create_chat,
     delete_chat,
@@ -37,6 +38,10 @@ router = APIRouter()
 _SSE_TIMEOUT = 300  # 5 minutes max stream time
 
 
+def _raise_chat_db_http_error(exc: ChatDatabaseUnavailable) -> None:
+    raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 # ── Chats CRUD ────────────────────────────────────────────────────────────────
 
 @router.post("", status_code=201, response_model=ChatDetail)
@@ -44,12 +49,15 @@ async def create_new_chat(
     req: CreateChatRequest,
     user: AuthUser = Depends(get_current_user),
 ) -> ChatDetail:
-    doc = await create_chat(
-        user.username,
-        title=req.title,
-        collection_name=req.collection_name,
-        config_override=req.config_override,
-    )
+    try:
+        doc = await create_chat(
+            user.username,
+            title=req.title,
+            collection_name=req.collection_name,
+            config_override=req.config_override,
+        )
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
     return ChatDetail(**doc)
 
 
@@ -57,7 +65,10 @@ async def create_new_chat(
 async def list_user_chats(
     user: AuthUser = Depends(get_current_user),
 ) -> list[ChatSummary]:
-    chats = await list_chats(user.username)
+    try:
+        chats = await list_chats(user.username)
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
     return [ChatSummary(**c) for c in chats]
 
 
@@ -66,7 +77,10 @@ async def get_chat_detail(
     chat_id: str,
     user: AuthUser = Depends(get_current_user),
 ) -> ChatDetail:
-    chat = await get_chat(chat_id, user.username)
+    try:
+        chat = await get_chat(chat_id, user.username)
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     return ChatDetail(**chat)
@@ -81,7 +95,10 @@ async def update_chat_detail(
     updates = req.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
-    doc = await update_chat(chat_id, user.username, updates)
+    try:
+        doc = await update_chat(chat_id, user.username, updates)
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
     if not doc:
         raise HTTPException(status_code=404, detail="Chat not found")
     return ChatDetail(**doc)
@@ -92,7 +109,10 @@ async def delete_chat_endpoint(
     chat_id: str,
     user: AuthUser = Depends(get_current_user),
 ) -> None:
-    deleted = await delete_chat(chat_id, user.username)
+    try:
+        deleted = await delete_chat(chat_id, user.username)
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
     if not deleted:
         raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -104,10 +124,16 @@ async def get_chat_messages(
     skip: int = 0,
     user: AuthUser = Depends(get_current_user),
 ) -> list[MessageOut]:
-    chat = await get_chat(chat_id, user.username)
+    try:
+        chat = await get_chat(chat_id, user.username)
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
-    msgs = await get_messages(chat_id, limit=limit, skip=skip)
+    try:
+        msgs = await get_messages(chat_id, limit=limit, skip=skip)
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
     return [MessageOut(**m) for m in msgs]
 
 
@@ -117,6 +143,24 @@ async def _stream_agent_events(
     task_id: str,
     message_id: str,
 ) -> AsyncIterator[str]:
+    async def _try_update_message(
+        content: str,
+        records: list[dict] | None,
+        status: str,
+        *,
+        interrupted_value: bool = False,
+    ) -> None:
+        try:
+            await update_message_content(
+                message_id,
+                content,
+                records,
+                status,
+                interrupted=interrupted_value,
+            )
+        except ChatDatabaseUnavailable:
+            return
+
     r = aioredis.from_url(REDIS_AGENT_URL, decode_responses=True)
     ps = r.pubsub()
     await ps.subscribe(f"agent_events:{task_id}")
@@ -154,8 +198,11 @@ async def _stream_agent_events(
 
             elif event_type == "interrupt":
                 interrupted = True
-                await update_message_content(
-                    message_id, full_answer, source_records, "completed", interrupted=True
+                await _try_update_message(
+                    full_answer,
+                    source_records,
+                    "completed",
+                    interrupted_value=True,
                 )
                 yield f"data: {json.dumps(data)}\n\n"
                 break
@@ -164,19 +211,19 @@ async def _stream_agent_events(
                 result = data.get("result", {})
                 full_answer = result.get("answer", full_answer)
                 source_records = result.get("source_records", source_records)
-                await update_message_content(message_id, full_answer, source_records, "completed")
+                await _try_update_message(full_answer, source_records, "completed")
                 yield f"data: {json.dumps(data)}\n\n"
                 yield "data: [DONE]\n\n"
                 break
 
             elif event_type == "error":
-                await update_message_content(message_id, full_answer, None, "failed")
+                await _try_update_message(full_answer, None, "failed")
                 yield f"data: {json.dumps(data)}\n\n"
                 break
 
         else:
             # Timeout branch
-            await update_message_content(message_id, full_answer, None, "failed")
+            await _try_update_message(full_answer, None, "failed")
             yield f'data: {json.dumps({"type": "error", "detail": "Stream timed out"})}\n\n'
 
     finally:
@@ -190,7 +237,10 @@ async def send_message(
     req: SendMessageRequest,
     user: AuthUser = Depends(get_current_user),
 ) -> StreamingResponse:
-    chat = await get_chat(chat_id, user.username)
+    try:
+        chat = await get_chat(chat_id, user.username)
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -202,7 +252,10 @@ async def send_message(
         effective_config.update(req.config_override)
 
     # Persist user message
-    await append_message(chat_id, "user", req.content, "completed")
+    try:
+        await append_message(chat_id, "user", req.content, "completed")
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
 
     # Dispatch agent task — thread_id=chat_id preserves per-chat conversation state
     try:
@@ -214,9 +267,12 @@ async def send_message(
         raise HTTPException(status_code=503, detail=f"Agent broker unavailable: {exc}")
 
     # Persist placeholder assistant message
-    message_id = await append_message(
-        chat_id, "assistant", "", "streaming", task_id=task.id
-    )
+    try:
+        message_id = await append_message(
+            chat_id, "assistant", "", "streaming", task_id=task.id
+        )
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
 
     return StreamingResponse(
         _stream_agent_events(task.id, message_id),
@@ -234,7 +290,10 @@ async def resume_agent(
     req: ResumeRequest,
     user: AuthUser = Depends(get_current_user),
 ) -> StreamingResponse:
-    chat = await get_chat(chat_id, user.username)
+    try:
+        chat = await get_chat(chat_id, user.username)
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
@@ -246,9 +305,12 @@ async def resume_agent(
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Agent broker unavailable: {exc}")
 
-    message_id = await append_message(
-        chat_id, "assistant", "", "streaming", task_id=task.id
-    )
+    try:
+        message_id = await append_message(
+            chat_id, "assistant", "", "streaming", task_id=task.id
+        )
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
 
     return StreamingResponse(
         _stream_agent_events(task.id, message_id),

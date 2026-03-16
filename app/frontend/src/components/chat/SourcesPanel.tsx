@@ -8,10 +8,11 @@ interface SourcesPanelProps {
   sources: SourceEntry[]
   onSourcesChange: (sources: SourceEntry[]) => void
   onAddToChat: () => void
+  busy?: boolean
   mode: 'new' | 'add'
 }
 
-export function SourcesPanel({ open, onOpenChange, sources, onSourcesChange, onAddToChat, mode }: SourcesPanelProps) {
+export function SourcesPanel({ open, onOpenChange, sources, onSourcesChange, onAddToChat, busy = false, mode }: SourcesPanelProps) {
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full sm:max-w-md flex flex-col p-0">
@@ -23,12 +24,15 @@ export function SourcesPanel({ open, onOpenChange, sources, onSourcesChange, onA
               : 'Add more sources to this ongoing conversation.'}
           </p>
         </SheetHeader>
-        <div className="flex-1 overflow-hidden px-4 py-4">
+        <div className="flex-1 min-h-0 overflow-hidden px-4 py-4">
           <SourceForm
             sources={sources}
             onChange={onSourcesChange}
-            onSubmit={() => { onAddToChat(); onOpenChange(false) }}
+            onSubmit={onAddToChat}
             submitLabel={mode === 'new' ? 'Start Chat' : 'Add to Chat'}
+            submitDisabled={busy}
+            submitLoading={busy}
+            submitLoadingLabel={mode === 'new' ? 'Starting chat...' : 'Adding sources...'}
             compact
           />
         </div>

@@ -54,6 +54,14 @@ from app.config.settings import REDIS_AGENT_URL
 
 logger = get_task_logger(__name__)
 
+
+def _is_graph_recursion_error(exc: Exception) -> bool:
+    return (
+        type(exc).__name__ == "GraphRecursionError"
+        or "GRAPH_RECURSION_LIMIT" in str(exc)
+        or "Recursion limit" in str(exc)
+    )
+
 # ---------------------------------------------------------------------------
 # Celery application
 # ---------------------------------------------------------------------------
@@ -120,6 +128,8 @@ async def _run_agent_async(
     async def publish(event: dict) -> None:
         await redis_client.publish(channel, json.dumps(event))
 
+    agent = None
+
     try:
         async with AsyncRedisSaver.from_conn_string(REDIS_AGENT_URL) as checkpointer:
             agent = OrchestratorAgent(
@@ -161,6 +171,17 @@ async def _run_agent_async(
             return result
 
     except Exception as exc:
+        if agent is not None and _is_graph_recursion_error(exc):
+            fallback_answer = await agent.afallback_answer(query, reason=str(exc))
+            result = {
+                "answer": fallback_answer,
+                "thread_id": thread_id,
+                "source_records": [],
+                "interrupted": False,
+            }
+            await publish({"type": "done", "result": result})
+            return result
+
         error_event = {
             "type": "error",
             "error": str(exc),

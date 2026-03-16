@@ -77,6 +77,9 @@ Citation rules (MANDATORY):
 
 Tool selection guidance:
 - For simple lookups use retrieval tools directly.
+- For short reading-list questions such as "which papers should I read" or
+    "papers related to X", prefer direct literature lookup and answer with a
+    concise recommendation list instead of delegating to invoke_researcher.
 - For questions requiring synthesis across multiple papers, delegate to
   invoke_researcher.
 - Use analyze_data only after loading data with get_data.
@@ -889,6 +892,8 @@ class OrchestratorAgent:
         config_override: dict | None = None,
     ) -> None:
         self.username = username
+        self._password = password
+        self._config_override = config_override
         self._checkpointer = checkpointer or MemorySaver()
         self._store = store or InMemoryStore()
         self.graph = build_graph(
@@ -904,6 +909,16 @@ class OrchestratorAgent:
                 "username": self.username,
             }
         }
+
+    async def afallback_answer(self, query: str, reason: str | None = None) -> str:
+        from app.agent.researcher import ResearcherAgent
+
+        researcher = ResearcherAgent(
+            self.username,
+            self._password,
+            self._config_override,
+        )
+        return await researcher.afallback_answer(query, reason=reason)
 
     # ── Synchronous run ──────────────────────────────────────────────────────
 

@@ -1,4 +1,4 @@
-import { Plus, Rocket } from 'lucide-react'
+import { Loader2, Plus, Rocket } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -14,6 +14,8 @@ interface SourceFormProps {
   onSubmit: () => void
   submitLabel?: string
   submitDisabled?: boolean
+  submitLoading?: boolean
+  submitLoadingLabel?: string
   compact?: boolean
 }
 
@@ -32,6 +34,8 @@ export function SourceForm({
   onSubmit,
   submitLabel = 'Start Chat',
   submitDisabled = false,
+  submitLoading = false,
+  submitLoadingLabel = 'Working...',
   compact = false,
 }: SourceFormProps) {
   const addSource = () => {
@@ -48,9 +52,9 @@ export function SourceForm({
   }
 
   return (
-    <div className="flex flex-col gap-3 h-full">
+    <div className="flex h-full min-h-0 flex-col gap-3">
       {/* Scroll area */}
-      <ScrollArea className={compact ? 'flex-1 pr-2' : 'max-h-[60vh] pr-2'}>
+      <ScrollArea className={compact ? 'min-h-0 flex-1 pr-2' : 'h-[min(60vh,32rem)] pr-2'}>
         <div className="space-y-2 pr-1">
           {sources.length === 0 && (
             <div className="text-center py-8 text-muted-foreground text-sm">
@@ -92,12 +96,12 @@ export function SourceForm({
         <Button
           type="button"
           onClick={onSubmit}
-          disabled={submitDisabled}
+          disabled={submitDisabled || submitLoading}
           className="gap-1.5"
           size="sm"
         >
-          <Rocket size={14} />
-          {submitLabel}
+          {submitLoading ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
+          {submitLoading ? submitLoadingLabel : submitLabel}
         </Button>
       </div>
     </div>
