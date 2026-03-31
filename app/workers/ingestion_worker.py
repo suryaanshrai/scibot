@@ -385,16 +385,28 @@ def task_create_and_ingest_collection(
             config=config,
             password=password,
         )
+        load_errors = result["load_errors"]
+        dynamic_count = len(
+            sources.get("dynamic_sources") or sources.get("dynamic_data_sources") or []
+        )
         logger.info(
-            "create_and_ingest done — user=%s collection=%s sources=%d chunks=%d",
+            "create_and_ingest done — user=%s collection=%s sources=%d chunks=%d dynamic=%d",
             username,
             actual_name,
             ingest_result["ingested_sources"],
             ingest_result["total_chunks"],
+            dynamic_count,
         )
+        if load_errors:
+            logger.warning(
+                "create_and_ingest load_errors — user=%s collection=%s errors=%s",
+                username,
+                actual_name,
+                load_errors,
+            )
         return {
             "collection_name": actual_name,
-            "load_errors": result["load_errors"],
+            "load_errors": load_errors,
             **dict(ingest_result),
         }
     except StoreSettingsDriftError:
@@ -451,16 +463,28 @@ def task_update_and_ingest_collection(
             config=config,
             password=password,
         )
+        load_errors = result["load_errors"]
+        dynamic_count = len(
+            sources.get("dynamic_sources") or sources.get("dynamic_data_sources") or []
+        )
         logger.info(
-            "update_and_ingest done — user=%s collection=%s sources=%d chunks=%d",
+            "update_and_ingest done — user=%s collection=%s sources=%d chunks=%d dynamic=%d",
             username,
             collection_name,
             ingest_result["ingested_sources"],
             ingest_result["total_chunks"],
+            dynamic_count,
         )
+        if load_errors:
+            logger.warning(
+                "update_and_ingest load_errors — user=%s collection=%s errors=%s",
+                username,
+                collection_name,
+                load_errors,
+            )
         return {
             "collection_name": collection_name,
-            "load_errors": result["load_errors"],
+            "load_errors": load_errors,
             **dict(ingest_result),
         }
     except StoreSettingsDriftError:

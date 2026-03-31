@@ -333,10 +333,16 @@ async def resume_agent(
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
+    # Re-merge config so the resumed agent still has data_source_creds etc.
+    effective_config: dict = {}
+    if chat.get("config_override"):
+        effective_config.update(chat["config_override"])
+
     try:
         task = await asyncio.to_thread(
             task_resume_agent.delay,
             user.username, user.password, chat_id, req.response, chat.get("collection_name"),
+            effective_config or None,
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Agent broker unavailable: {exc}")

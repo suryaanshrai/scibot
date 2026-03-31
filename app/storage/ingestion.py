@@ -60,8 +60,6 @@ Design notes
 
 from __future__ import annotations
 
-from functools import lru_cache
-import logging
 import pickle
 import re as _re
 import sys
@@ -74,8 +72,6 @@ from langchain_core.documents import Document
 from app.config.store import get_store
 from app.users.collections_db import load_collection, update_collection_data
 from app.users.config import resolve_config
-
-logger = logging.getLogger(__name__)
 
 
 # ── TypedDicts ────────────────────────────────────────────────────────────────
@@ -246,6 +242,14 @@ def _split_docs(
       ``chunk_index``  — 0-based position within the parent document's chunks
       ``chunk_count``  — total number of chunks produced from that parent
     """
+    from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
+
+    prose_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        add_start_index=True,
+    )
+
     all_chunks: list[Document] = []
 
     for doc in docs:
@@ -254,7 +258,18 @@ def _split_docs(
         ext = Path(source_path).suffix.lstrip(".").lower() if source_path else ""
         lang_key = _EXT_TO_LANGUAGE.get(ext) if ext in _CODE_EXTENSIONS else None
 
-        splitter = _get_splitter(lang_key, chunk_size, chunk_overlap)
+        if lang_key:
+            try:
+                lang_enum = Language(lang_key)
+                splitter = RecursiveCharacterTextSplitter.from_language(
+                    language=lang_enum,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                )
+            except (ValueError, AttributeError):
+                splitter = prose_splitter
+        else:
+            splitter = prose_splitter
 
         raw_chunks = splitter.split_documents([doc])
         for idx, chunk in enumerate(raw_chunks):
@@ -263,48 +278,6 @@ def _split_docs(
         all_chunks.extend(raw_chunks)
 
     return all_chunks
-
-
-@lru_cache(maxsize=32)
-def _get_prose_splitter(chunk_size: int, chunk_overlap: int) -> Any:
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-    return RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        add_start_index=True,
-    )
-
-
-@lru_cache(maxsize=128)
-def _get_code_splitter(
-    lang_key: str,
-    chunk_size: int,
-    chunk_overlap: int,
-) -> Any | None:
-    from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
-
-    try:
-        lang_enum = Language(lang_key)
-        return RecursiveCharacterTextSplitter.from_language(
-            language=lang_enum,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
-    except (ValueError, AttributeError):
-        return None
-
-
-def _get_splitter(
-    lang_key: str | None,
-    chunk_size: int,
-    chunk_overlap: int,
-) -> Any:
-    prose_splitter = _get_prose_splitter(chunk_size, chunk_overlap)
-    if not lang_key:
-        return prose_splitter
-
-    return _get_code_splitter(lang_key, chunk_size, chunk_overlap) or prose_splitter
 
 
 def _enrich_chunks(
@@ -429,109 +402,6 @@ def _load_source_docs(
     new_paths = _pickle_docs(docs, docs_dir, start_index=start_index)
     entry["doc_paths"] = new_paths
     return docs
-
-
-def _entry_source_label(entry: dict) -> str:
-    return entry.get("source_id", repr(entry.get("url") or entry.get("file_path")))
-
-
-def _flush_chunk_batch(
-    store: Any,
-    batch: list[tuple[str, dict, list[Document]]],
-    ingested_at: str,
-) -> tuple[int, int, list[str]]:
-    if not batch:
-        return 0, 0, []
-
-    all_chunks = [chunk for _, _, chunks in batch for chunk in chunks]
-    if not all_chunks:
-        return 0, 0, []
-
-    try:
-        store.add_documents(all_chunks)
-        for _, entry, _ in batch:
-            entry["ingested_at"] = ingested_at
-        return len(batch), len(all_chunks), []
-    except Exception as exc:
-        logger.warning(
-            "Batched store.add_documents failed; falling back to per-source writes: %s", exc
-        )
-
-    errors: list[str] = []
-    ingested_source_count = 0
-    total_chunks = 0
-    for src_type, entry, chunks in batch:
-        try:
-            store.add_documents(chunks)
-            entry["ingested_at"] = ingested_at
-            ingested_source_count += 1
-            total_chunks += len(chunks)
-        except Exception as source_exc:
-            msg = f"{src_type} {_entry_source_label(entry)!r}: {source_exc}"
-            errors.append(msg)
-            logger.error("Ingestion error — %s", msg, exc_info=True)
-
-    return ingested_source_count, total_chunks, errors
-
-
-def _ingest_entries(
-    entries: list[tuple[str, dict]],
-    store: Any,
-    username: str,
-    collection_name: str,
-    effective_cfg: dict,
-    ingested_at: str,
-) -> tuple[int, int, list[str]]:
-    chunk_size = int((effective_cfg.get("chunk_size") or 800))
-    chunk_overlap = int((effective_cfg.get("chunk_overlap") or 150))
-    batch_size = max(1, int(effective_cfg.get("ingest_batch_size") or 256))
-
-    all_errors: list[str] = []
-    total_chunks = 0
-    ingested_source_count = 0
-    pending_batch: list[tuple[str, dict, list[Document]]] = []
-    pending_chunk_count = 0
-
-    for src_type, entry in entries:
-        try:
-            docs = _load_source_docs(entry, src_type, username, collection_name, effective_cfg)
-            if not docs:
-                continue
-
-            chunks = _split_docs(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-            _enrich_chunks(chunks, username, collection_name, ingested_at)
-
-            pending_batch.append((src_type, entry, chunks))
-            pending_chunk_count += len(chunks)
-            if pending_chunk_count < batch_size:
-                continue
-
-            batch_sources, batch_chunks, batch_errors = _flush_chunk_batch(
-                store,
-                pending_batch,
-                ingested_at,
-            )
-            ingested_source_count += batch_sources
-            total_chunks += batch_chunks
-            all_errors.extend(batch_errors)
-            pending_batch = []
-            pending_chunk_count = 0
-        except Exception as exc:
-            msg = f"{src_type} {_entry_source_label(entry)!r}: {exc}"
-            all_errors.append(msg)
-            logger.error("Ingestion error — %s", msg, exc_info=True)
-
-    if pending_batch:
-        batch_sources, batch_chunks, batch_errors = _flush_chunk_batch(
-            store,
-            pending_batch,
-            ingested_at,
-        )
-        ingested_source_count += batch_sources
-        total_chunks += batch_chunks
-        all_errors.extend(batch_errors)
-
-    return ingested_source_count, total_chunks, all_errors
 
 
 def _all_source_entries(collection_data: dict) -> list[tuple[str, dict]]:
@@ -782,14 +652,29 @@ def ingest_collection(
     vcname = _vector_collection_name(username, collection_name)
     ingested_at = _now_iso()
 
-    ingested_source_count, total_chunks, all_errors = _ingest_entries(
-        _all_source_entries(collection_data),
-        store,
-        username,
-        collection_name,
-        effective_cfg,
-        ingested_at,
-    )
+    chunk_size = int((effective_cfg.get("chunk_size") or 800))
+    chunk_overlap = int((effective_cfg.get("chunk_overlap") or 150))
+
+    all_errors: list[str] = []
+    total_chunks = 0
+    ingested_source_count = 0
+
+    for src_type, entry in _all_source_entries(collection_data):
+        try:
+            docs = _load_source_docs(entry, src_type, username, collection_name, effective_cfg)
+            if not docs:
+                continue
+            chunks = _split_docs(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            _enrich_chunks(chunks, username, collection_name, ingested_at)
+            store.add_documents(chunks)
+            entry["ingested_at"] = ingested_at
+            total_chunks += len(chunks)
+            ingested_source_count += 1
+        except Exception as exc:
+            sid = entry.get("source_id", repr(entry.get("url") or entry.get("file_path")))
+            msg = f"{src_type} {sid!r}: {exc}"
+            all_errors.append(msg)
+            print(f"[ingestion] ERROR ingesting {msg}", file=sys.stderr)
 
     collection_data["vector_collection"] = vcname
     collection_data["store_settings"] = _snapshot_store_settings(effective_cfg)
@@ -859,14 +744,29 @@ def ingest_new_sources(
     vcname = _vector_collection_name(username, collection_name)
     ingested_at = _now_iso()
 
-    ingested_source_count, total_chunks, all_errors = _ingest_entries(
-        pending,
-        store,
-        username,
-        collection_name,
-        effective_cfg,
-        ingested_at,
-    )
+    chunk_size = int((effective_cfg.get("chunk_size") or 800))
+    chunk_overlap = int((effective_cfg.get("chunk_overlap") or 150))
+
+    all_errors: list[str] = []
+    total_chunks = 0
+    ingested_source_count = 0
+
+    for src_type, entry in pending:
+        try:
+            docs = _load_source_docs(entry, src_type, username, collection_name, effective_cfg)
+            if not docs:
+                continue
+            chunks = _split_docs(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            _enrich_chunks(chunks, username, collection_name, ingested_at)
+            store.add_documents(chunks)
+            entry["ingested_at"] = ingested_at
+            total_chunks += len(chunks)
+            ingested_source_count += 1
+        except Exception as exc:
+            sid = entry.get("source_id", repr(entry.get("url") or entry.get("file_path")))
+            msg = f"{src_type} {sid!r}: {exc}"
+            all_errors.append(msg)
+            print(f"[ingestion] ERROR ingesting {msg}", file=sys.stderr)
 
     # Ensure vector_collection is stamped at the top level.
     collection_data["vector_collection"] = vcname
@@ -946,17 +846,34 @@ def update_store(
     vcname = _vector_collection_name(username, collection_name)
     ingested_at = _now_iso()
 
+    chunk_size = int((effective_cfg.get("chunk_size") or 800))
+    chunk_overlap = int((effective_cfg.get("chunk_overlap") or 150))
+
     # Step 1: delete existing vectors for targeted source_ids.
     _delete_by_source_ids(store, source_ids, provider)
 
-    ingested_source_count, total_chunks, all_errors = _ingest_entries(
-        matched,
-        store,
-        username,
-        collection_name,
-        effective_cfg,
-        ingested_at,
-    )
+    all_errors: list[str] = []
+    total_chunks = 0
+    ingested_source_count = 0
+
+    for src_type, entry in matched:
+        try:
+            # Force reload from source if pkl files are present (content may
+            # have changed), or re-fetch if files are missing.
+            docs = _load_source_docs(entry, src_type, username, collection_name, effective_cfg)
+            if not docs:
+                continue
+            chunks = _split_docs(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            _enrich_chunks(chunks, username, collection_name, ingested_at)
+            store.add_documents(chunks)
+            entry["ingested_at"] = ingested_at
+            total_chunks += len(chunks)
+            ingested_source_count += 1
+        except Exception as exc:
+            sid = entry.get("source_id", repr(entry.get("url") or entry.get("file_path")))
+            msg = f"{src_type} {sid!r}: {exc}"
+            all_errors.append(msg)
+            print(f"[ingestion] ERROR re-ingesting {msg}", file=sys.stderr)
 
     collection_data["vector_collection"] = vcname
     collection_data["store_settings"] = _snapshot_store_settings(effective_cfg)

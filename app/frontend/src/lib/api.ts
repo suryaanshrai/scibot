@@ -6,8 +6,7 @@ import type { SourceEntry } from '@/types/sources'
 import { EMPTY_CONFIG_OPTIONS, normalizeUserConfig } from '@/types/config'
 
 const API_BASE = normalizeApiBase(import.meta.env.BACKEND_URL)
-const INGEST_POLL_MS = 1200
-const INGEST_TIMEOUT_MS = 180000
+const INGEST_POLL_MS = 3000
 
 function normalizeApiBase(raw?: string) {
   const fallback = '/api'
@@ -295,19 +294,17 @@ function compactBuckets(buckets: SourceBuckets) {
 }
 
 async function waitForIngest(auth: AuthSession, collectionName: string, taskId?: string) {
-  const startedAt = Date.now()
   const params = taskId ? `?task_id=${encodeURIComponent(taskId)}` : ''
-  while (Date.now() - startedAt < INGEST_TIMEOUT_MS) {
+  while (true) {
     const status = await apiRequest<{ status: string; error?: string | null }>(
       `/collections/${encodeURIComponent(collectionName)}/ingest-status${params}`,
       {},
       auth
     )
     if (['success', 'completed'].includes(status.status)) return
-    if (status.status === 'failure') throw new Error(status.error || 'Collection ingestion failed')
+    if (['failure', 'revoked'].includes(status.status)) throw new Error(status.error || 'Collection ingestion failed')
     await new Promise((resolve) => setTimeout(resolve, INGEST_POLL_MS))
   }
-  throw new Error('Collection ingestion timed out')
 }
 
 async function createOrUpdateCollectionFromSources(

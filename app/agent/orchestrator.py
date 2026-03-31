@@ -227,6 +227,33 @@ def _build_active_collection_context(username: str, collection_name: str) -> str
         if source_labels:
             lines.append("Known items in this collection:")
             lines.extend(f"- {label}" for label in source_labels)
+
+        # ── Dynamic / queryable data sources ──────────────────────────────────
+        dynamic_sources: list[dict] = data.get("dynamic_data_sources") or []
+        if dynamic_sources:
+            lines.append("")
+            lines.append(
+                "## Queryable Data Sources (use get_data — NEVER ask the user for an alias)"
+            )
+            lines.append("Call get_data directly with the alias and source_type below:")
+            for ds in dynamic_sources:
+                stype = ds.get("source_type", "unknown")
+                alias = ds.get("credential_key") or ds.get("file_path") or ""
+                desc = ds.get("description", "")
+                extras: list[str] = []
+                if ds.get("database"):
+                    extras.append(f"database={ds['database']}")
+                if ds.get("mongo_collection"):
+                    extras.append(f"collection={ds['mongo_collection']}")
+                if ds.get("table"):
+                    extras.append(f"table={ds['table']}")
+                extras_str = ", ".join(extras)
+                lines.append(
+                    f"- alias=`{alias}` | type={stype}"
+                    + (f" | {extras_str}" if extras_str else "")
+                    + (f" | {desc}" if desc else "")
+                )
+
         return "\n".join(lines)
     except Exception:  # noqa: BLE001
         return ""
@@ -1068,11 +1095,84 @@ class OrchestratorAgent:
                         "filtered": len(new_records) - len(visible),
                     }
 
-            # Surface interrupts
+            # Surface interrupts — LangGraph yields Interrupt objects which are
+            # not JSON-serialisable; extract their .value (the dict we passed to
+            # interrupt()) so the worker can publish them over Redis.
             if isinstance(data, dict) and "__interrupt__" in data:
-                yield {"type": "interrupt", "payload": data["__interrupt__"]}
+                raw = data["__interrupt__"]
+                if isinstance(raw, (list, tuple)):
+                    serializable_payload = [
+                        i.value if hasattr(i, "value") else str(i) for i in raw
+                    ]
+                elif hasattr(raw, "value"):
+                    serializable_payload = raw.value
+                else:
+                    serializable_payload = str(raw)
+                yield {"type": "interrupt", "payload": serializable_payload}
 
     # ── Resume (HITL) ────────────────────────────────────────────────────────
+
+    async def astream_resume(
+        self, response: Any, thread_id: str = "default"
+    ) -> AsyncIterator[str | dict]:
+        """
+        Stream after resuming from a HITL interrupt.  Same yield types as
+        ``astream()``.  Starts the graph with ``Command(resume=response)``
+        instead of a new HumanMessage.
+        """
+        config = self._config(thread_id)
+        async for chunk in self.graph.astream(
+            Command(resume=response),
+            config,
+            stream_mode=["messages", "updates"],
+        ):
+            kind = chunk[0] if isinstance(chunk, tuple) else None
+            data = chunk[1] if isinstance(chunk, tuple) else chunk
+
+            if kind == "messages":
+                msg_chunk = data[0] if isinstance(data, tuple) else data
+                metadata = data[1] if isinstance(data, tuple) and len(data) > 1 else {}
+                if (
+                    isinstance(msg_chunk, (AIMessage, AIMessageChunk))
+                    and metadata.get("langgraph_node") == "call_model"
+                ):
+                    content_str = _stringify_content(getattr(msg_chunk, "content", ""))
+                    if content_str:
+                        yield content_str
+
+            elif kind == "updates":
+                if isinstance(data, dict):
+                    if "run_tools" in data:
+                        tool_msgs = [
+                            m for m in (data["run_tools"].get("messages") or [])
+                            if isinstance(m, ToolMessage)
+                        ]
+                        for tm in tool_msgs:
+                            yield {
+                                "type": "tool_start",
+                                "tool": getattr(tm, "name", ""),
+                            }
+
+                    if "extract_sources" in data:
+                        new_records = data["extract_sources"].get("source_records", [])
+                        visible = [r for r in new_records if not r.filtered]
+                        yield {
+                            "type": "sources",
+                            "count": len(visible),
+                            "filtered": len(new_records) - len(visible),
+                        }
+
+            if isinstance(data, dict) and "__interrupt__" in data:
+                raw = data["__interrupt__"]
+                if isinstance(raw, (list, tuple)):
+                    serializable_payload = [
+                        i.value if hasattr(i, "value") else str(i) for i in raw
+                    ]
+                elif hasattr(raw, "value"):
+                    serializable_payload = raw.value
+                else:
+                    serializable_payload = str(raw)
+                yield {"type": "interrupt", "payload": serializable_payload}
 
     async def resume(
         self, response: Any, thread_id: str = "default"
@@ -1108,9 +1208,7 @@ class OrchestratorAgent:
         last_ai = next(
             (m for m in reversed(messages) if isinstance(m, AIMessage)), None
         )
-        answer = (
-            last_ai.content if last_ai and isinstance(last_ai.content, str) else ""
-        )
+        answer = _stringify_content(last_ai.content) if last_ai else ""
         source_records: list[SourceRecord] = result.get("source_records") or []
         return AgentResponse(
             answer=answer,

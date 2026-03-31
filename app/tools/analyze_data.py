@@ -105,11 +105,19 @@ def _run_eda(df: pd.DataFrame) -> str:
     cat_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
     vc_parts: list[str] = []
     for col in cat_cols:
-        n_unique = df[col].nunique()
+        try:
+            n_unique = df[col].nunique()
+        except TypeError:
+            # Column contains unhashable values (e.g. lists from MongoDB documents)
+            vc_parts.append(f"  '{col}': skipped (contains unhashable values)")
+            continue
         if n_unique <= 50:
-            vc = df[col].value_counts(normalize=True).head(10).mul(100).round(2)
-            vc_parts.append(f"  '{col}' ({n_unique} unique):\n" +
-                            "\n".join(f"    {v!r}: {p}%" for v, p in vc.items()))
+            try:
+                vc = df[col].value_counts(normalize=True).head(10).mul(100).round(2)
+                vc_parts.append(f"  '{col}' ({n_unique} unique):\n" +
+                                "\n".join(f"    {v!r}: {p}%" for v, p in vc.items()))
+            except TypeError:
+                vc_parts.append(f"  '{col}': skipped (contains unhashable values)")
     if vc_parts:
         parts.append("Top value counts (categorical columns):\n" + "\n".join(vc_parts))
 
@@ -156,7 +164,13 @@ def _llm_insights(eda_text: str, query: str | None, username: str | None, passwo
 
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
-        return response.content if hasattr(response, "content") else str(response)
+        content = response.content if hasattr(response, "content") else str(response)
+        if isinstance(content, list):
+            content = "\n".join(
+                item.get("text", "") if isinstance(item, dict) else str(item)
+                for item in content
+            )
+        return content
     except Exception as exc:
         return f"(LLM insight generation failed: {exc})"
 

@@ -61,7 +61,7 @@ def _to_collection_sources(src: CollectionSourcesIn) -> dict:
     if src.images:
         out["images"] = [s.model_dump(exclude_none=True) for s in src.images]
     if src.dynamic_data_sources:
-        out["dynamic_data_sources"] = [s.model_dump(exclude_none=True) for s in src.dynamic_data_sources]
+        out["dynamic_sources"] = [s.model_dump(exclude_none=True) for s in src.dynamic_data_sources]
     return out
 
 
@@ -225,7 +225,7 @@ async def upload_files(
     if paper_sources:
         sources["papers"] = paper_sources
     if dynamic_sources:
-        sources["dynamic_data_sources"] = dynamic_sources
+        sources["dynamic_sources"] = dynamic_sources
     try:
         task = await asyncio.to_thread(
             task_update_and_ingest_collection.delay,

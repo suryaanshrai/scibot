@@ -23,15 +23,12 @@ Usage:
 from __future__ import annotations
 
 import importlib.util
-import json
-from functools import lru_cache
 from typing import Any
-from urllib.parse import urlparse
 
 from app.config.settings import (
     CHROMA_HOST,
+    CHROMA_PERSIST_DIRECTORY,
     CHROMA_PORT,
-    CHROMA_URL,
     DEFAULT_STORE_COLLECTION,
     DEFAULT_STORE_NAMESPACE,
     DEFAULT_STORE_PROVIDER,
@@ -139,72 +136,12 @@ def _build_embedding(config: dict[str, Any] | None) -> Any:
     return get_embedding_model(config)
 
 
-def _config_cache_key(config: dict[str, Any] | None) -> str:
-    return json.dumps(config or {}, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _get_chroma_http_config(config: dict[str, Any]) -> dict[str, Any] | None:
-    chroma_url = config.get("chroma_url") or config.get("connection_string") or CHROMA_URL
-    if chroma_url:
-        raw_url = str(chroma_url).strip()
-        if not raw_url:
-            return None
-
-        parsed = urlparse(raw_url if "://" in raw_url else f"http://{raw_url}")
-        if not parsed.hostname:
-            raise ValueError(
-                "Chroma requires a valid HTTP URL. "
-                "Set 'connection_string' or 'chroma_url' in config, or CHROMA_URL in env."
-            )
-        if parsed.path not in {"", "/"}:
-            raise ValueError(
-                "Chroma URL must point to the service root and cannot include a path."
-            )
-
-        scheme = (parsed.scheme or "http").lower()
-        if scheme not in {"http", "https"}:
-            raise ValueError("Chroma URL must use the http or https scheme.")
-
-        return {
-            "host": parsed.hostname,
-            "port": parsed.port or (443 if scheme == "https" else 8000),
-            "ssl": scheme == "https",
-        }
-
-    chroma_host = config.get("chroma_host") or CHROMA_HOST
-    if not chroma_host:
-        return None
-
-    return {
-        "host": chroma_host,
-        "port": int(config.get("chroma_port") or CHROMA_PORT or 8000),
-        "ssl": False,
-    }
-
-
-def _should_cache_store(config: dict[str, Any]) -> bool:
-    provider = config.get("provider") or DEFAULT_STORE_PROVIDER or "chroma"
-
-    if provider == "chroma":
-        return _get_chroma_http_config(config) is not None
-
-    if provider == "qdrant":
-        return bool(config.get("qdrant_url") or QDRANT_URL)
-
-    return True
-
-
-@lru_cache(maxsize=32)
-def _get_store_cached(config_key: str) -> Any:
-    return _build_store(json.loads(config_key), embedding=None)
-
-
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
 
-def _build_store(
+def get_store(
     config: dict[str, Any] | None = None,
     embedding: Any | None = None,
 ) -> Any:
@@ -222,9 +159,9 @@ def _build_store(
                              automatically (ignored when `embedding` arg is supplied)
 
         Chroma-specific:
-                    connection_string / chroma_url – full HTTP URL for the remote Chroma server
+          persist_directory – local path to persist on disk (omit for in-memory)
           chroma_host        – HTTP host for remote Chroma server
-                    chroma_port        – HTTP port for remote Chroma server (legacy fallback)
+          chroma_port        – HTTP port for remote Chroma server
           distance_function  – HNSW distance metric: "cosine" (default), "l2", or "ip"
 
         Pinecone-specific:
@@ -278,24 +215,25 @@ def _build_store(
         distance_function = (cfg.get("distance_function") or "cosine").lower()
         collection_metadata = {"hnsw:space": distance_function}
 
-        chroma_config = _get_chroma_http_config(cfg)
-        if chroma_config is None:
-            raise ValueError(
-                "Chroma requires a remote HTTP endpoint. "
-                "Set 'connection_string' or 'chroma_url' in config, or CHROMA_URL in env."
+        chroma_host = cfg.get("chroma_host") or CHROMA_HOST
+        if chroma_host:
+            import chromadb
+
+            chroma_port = int(cfg.get("chroma_port") or CHROMA_PORT or 8000)
+            client = chromadb.HttpClient(host=chroma_host, port=chroma_port)
+            return Chroma(
+                client=client,
+                collection_name=collection_name,
+                embedding_function=embedding,
+                collection_metadata=collection_metadata,
+                **extra_kwargs,
             )
 
-        import chromadb
-
-        client = chromadb.HttpClient(
-            host=chroma_config["host"],
-            port=chroma_config["port"],
-            ssl=chroma_config["ssl"],
-        )
+        persist_dir = cfg.get("persist_directory") or CHROMA_PERSIST_DIRECTORY
         return Chroma(
-            client=client,
             collection_name=collection_name,
             embedding_function=embedding,
+            persist_directory=persist_dir or None,
             collection_metadata=collection_metadata,
             **extra_kwargs,
         )
@@ -422,16 +360,6 @@ def _build_store(
 
     # Should never reach here — _get_registry_entry raises first
     raise ValueError(f"Unsupported store provider: '{provider}'")
-
-
-def get_store(
-    config: dict[str, Any] | None = None,
-    embedding: Any | None = None,
-) -> Any:
-    cfg = config or {}
-    if embedding is not None or not _should_cache_store(cfg):
-        return _build_store(cfg, embedding=embedding)
-    return _get_store_cached(_config_cache_key(cfg))
 
 
 # ---------------------------------------------------------------------------

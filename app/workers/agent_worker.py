@@ -341,6 +341,7 @@ def task_resume_agent(
     thread_id: str,
     response: Any,
     active_collection_name: str | None = None,
+    config_override: dict | None = None,
 ) -> dict:
     """
     Resume an interrupted agent run (HITL approval gate).
@@ -373,6 +374,9 @@ def task_resume_agent(
             REDIS_AGENT_URL, decode_responses=False
         )
 
+        async def publish(event: dict) -> None:
+            await redis_client.publish(channel, json.dumps(event))
+
         try:
             async with AsyncRedisSaver.from_conn_string(REDIS_AGENT_URL) as checkpointer:
                 agent = OrchestratorAgent(
@@ -380,25 +384,44 @@ def task_resume_agent(
                     password=password,
                     checkpointer=checkpointer,
                     active_collection_name=active_collection_name,
+                    config_override=config_override,
                 )
 
-                agent_response = await agent.resume(
+                token_buffer: list[str] = []
+
+                async for chunk in agent.astream_resume(
                     response=response, thread_id=thread_id
-                )
+                ):
+                    if isinstance(chunk, str):
+                        token_buffer.append(chunk)
+                        await publish({"type": "token", "content": chunk})
+                    elif isinstance(chunk, dict):
+                        await publish(chunk)
 
-                source_records = [
-                    dataclasses.asdict(r) for r in agent_response.sources
-                ]
+                # Build final answer from state (same as _run_agent_async)
+                source_records: list[dict] = []
+                state = await agent.graph.aget_state(agent._config(thread_id))
+                final_ai_content = ""
+                if state and hasattr(state, "values"):
+                    for rec in state.values.get("source_records", []):
+                        source_records.append(dataclasses.asdict(rec))
+                    final_messages = state.values.get("messages", [])
+                    last_ai = next(
+                        (msg for msg in reversed(final_messages) if isinstance(msg, AIMessage)),
+                        None,
+                    )
+                    if last_ai:
+                        final_ai_content = _stringify_content(last_ai.content)
+
+                answer = _normalize_answer_text(final_ai_content or "".join(token_buffer))
                 result = {
-                    "answer": agent_response.answer,
+                    "answer": answer,
                     "thread_id": thread_id,
                     "source_records": source_records,
-                    "interrupted": agent_response.interrupted,
+                    "interrupted": False,
                 }
 
-                await redis_client.publish(
-                    channel, json.dumps({"type": "done", "result": result})
-                )
+                await publish({"type": "done", "result": result})
                 return result
         finally:
             await redis_client.aclose()

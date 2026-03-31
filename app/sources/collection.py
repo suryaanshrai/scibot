@@ -594,12 +594,31 @@ def _load_dynamic_sources(
     entries: list[dict] = []
     errors: list[str] = []
 
-    for src in sources.get("dynamic_sources") or []:
+    # Accept both the internal key ('dynamic_sources') used by reload_collection
+    # and the API-facing key ('dynamic_data_sources') produced by _to_collection_sources.
+    _dynamic_list = sources.get("dynamic_sources") or sources.get("dynamic_data_sources") or []
+    if not _dynamic_list:
+        return entries, errors
+
+    logger.info("Loading %d dynamic source(s) for user=%s", len(_dynamic_list), username)
+    for src in _dynamic_list:
+        src_type = src.get("source_type", "unknown")
+        src_label = src.get("file_path") or src.get("credential_key") or ""
+        logger.info("Analyzing dynamic source — type=%r label=%r", src_type, src_label)
         try:
             entry = load_dynamic_source(username, src, creds_map)
             entries.append(entry)
+            # load_dynamic_source catches analysis errors internally and returns an
+            # entry with analysis_error set — surface these as load_errors so the
+            # user knows the source was registered but its schema could not be read.
+            if entry.get("analysis_error"):
+                msg = f"dynamic_source {src_type!r} / {src_label!r}: {entry['analysis_error']}"
+                errors.append(msg)
+                logger.error("Source load error — %s", msg)
+            else:
+                logger.info("Dynamic source analyzed OK — type=%r label=%r", src_type, src_label)
         except Exception as exc:
-            msg = f"dynamic_source {src.get('source_type')!r} / {src.get('file_path') or src.get('credential_key')!r}: {exc}"
+            msg = f"dynamic_source {src_type!r} / {src_label!r}: {exc}"
             errors.append(msg)
             logger.error("Source load error — %s", msg, exc_info=True)
 
