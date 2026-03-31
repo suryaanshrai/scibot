@@ -16,6 +16,7 @@ URL/ID formats accepted:
 
 from __future__ import annotations
 
+import logging
 import re
 import tempfile
 import os
@@ -31,6 +32,8 @@ from app.sources.base import (
     collect_references_arxiv,
     make_document,
 )
+
+logger = logging.getLogger(__name__)
 
 # Match bare arXiv IDs: old-style (hep-th/9901001) and new-style (1706.03762[v2])
 _ARXIV_ID_RE = re.compile(
@@ -117,8 +120,8 @@ def _try_docling_pdf(pdf_url: str) -> str | None:
         text = parse_pdf_local(tmp_path)
         if text and len(text.strip()) > 200:
             return text
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("ArXiv PDF download/parse failed for %s: %s", pdf_url, exc)
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -177,7 +180,8 @@ class ArxivSource:
         for ref_id in top_ids:
             try:
                 doc = _fetch_paper(ref_id, s2_client=self._s2)
-            except Exception:
+            except Exception as exc:
+                logger.debug("Skipping reference paper %s — fetch failed: %s", ref_id, exc)
                 continue
             node = ref_nodes[ref_id]
             doc.metadata["referenced_by"] = node["referenced_by"]

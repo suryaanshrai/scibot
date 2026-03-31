@@ -25,6 +25,7 @@ Reference extraction pipeline:
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 from langchain_core.documents import Document
@@ -38,6 +39,8 @@ from app.sources.base import (
     iCiteClient,
     make_document,
 )
+
+logger = logging.getLogger(__name__)
 
 _REF_EXTRACTION_PROMPT = """\
 You are a scientific reference extractor. Given the following text from an academic paper, \
@@ -80,7 +83,8 @@ def _run_docling(path: str, start: int, end: int, images_scale: float) -> str | 
         )
         result = converter.convert(path, page_range=(start, end))
         return result.document.export_to_markdown()
-    except Exception:
+    except Exception as exc:
+        logger.debug("Docling parse failed for %s pages %d-%d: %s", path, start, end, exc)
         return None
 
 
@@ -115,11 +119,17 @@ def parse_pdf_local(path: str) -> str:
 
         # Chunk failed entirely — fall back to page-by-page at lowest scale
         if text is None:
+            logger.warning(
+                "Docling: pages %d-%d of %s failed at all scales; falling back to per-page",
+                start, end, path,
+            )
             page_texts: list[str] = []
             for p in range(start, end + 1):
                 t = _run_docling(path, p, p, _PDF_SCALES[-1])
                 if t:
                     page_texts.append(t)
+                else:
+                    logger.debug("Docling: page %d of %s produced no text", p, path)
             if page_texts:
                 text = "\n\n".join(page_texts)
 
@@ -152,8 +162,8 @@ def _extract_references_with_llm(content: str, llm) -> list[dict]:
         refs = json.loads(raw.strip())
         if isinstance(refs, list):
             return refs
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("LLM reference extraction failed: %s", exc)
     return []
 
 

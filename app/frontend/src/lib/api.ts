@@ -545,6 +545,10 @@ export async function deleteChat(auth: AuthSession, chatId: string): Promise<voi
   await apiRequest(`/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' }, auth)
 }
 
+export async function clearChatMessages(auth: AuthSession, chatId: string): Promise<void> {
+  await apiRequest(`/chats/${encodeURIComponent(chatId)}/clear`, { method: 'POST' }, auth)
+}
+
 function parseSseChunk(buffer: string): { rest: string; events: string[] } {
   const parts = buffer.split('\n\n')
   const rest = parts.pop() ?? ''

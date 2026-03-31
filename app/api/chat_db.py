@@ -213,6 +213,16 @@ async def delete_chat(chat_id: str, username: str) -> bool:
         _raise_chat_db_unavailable("deleting a chat", exc)
 
 
+async def clear_messages(chat_id: str) -> bool:
+    """Delete all messages for a chat without deleting the chat itself."""
+    try:
+        db = _get_db()
+        await db.messages.delete_many({"chat_id": chat_id})
+        return True
+    except PyMongoError as exc:
+        _raise_chat_db_unavailable("clearing messages for a chat", exc)
+
+
 # ── Messages CRUD ─────────────────────────────────────────────────────────────
 
 async def append_message(

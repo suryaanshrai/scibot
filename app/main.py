@@ -16,7 +16,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.chat_db import ChatDatabaseUnavailable, init_chat_db
-from app.api.routers import auth, chat, collections, config, mcp
+from app.api.routers import auth, chat, collections, config
+from app.api.routers.mcp import mcp_dispatcher
 from app.users.database import init_db
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ async def health() -> dict:
 # served at / when the build artifacts are present.
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 app.mount("/api", api)
-app.include_router(mcp.router, prefix="/mcp", tags=["mcp"])
+app.mount("/mcp", mcp_dispatcher)
 
 _FRONTEND_DIST = _ROOT / "app" / "frontend" / "dist"
 if _FRONTEND_DIST.exists():

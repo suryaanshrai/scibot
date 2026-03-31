@@ -95,13 +95,17 @@ def _build_ingest_status(task_id: str) -> IngestStatusResponse:
     task_status = r.status.lower()
     result_data = None
     error = None
+    source_errors = None
 
     if r.status == "SUCCESS":
         result_data = r.result if isinstance(r.result, dict) else {"raw": str(r.result)}
+        if result_data:
+            errs = (result_data.get("load_errors") or []) + (result_data.get("errors") or [])
+            source_errors = errs if errs else None
     elif r.status == "FAILURE":
         error = str(r.result)
 
-    return IngestStatusResponse(task_id=task_id, status=task_status, result=result_data, error=error)
+    return IngestStatusResponse(task_id=task_id, status=task_status, result=result_data, error=error, source_errors=source_errors)
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -113,6 +117,7 @@ async def create_collection(
 ) -> dict:
     collection_name = req.collection_name or uuid4().hex
     sources = dict(_to_collection_sources(req.sources))
+    print(sources)
     try:
         task = await asyncio.to_thread(
             task_create_and_ingest_collection.delay,

@@ -59,6 +59,7 @@ from celery import Celery
 from celery.utils.log import get_task_logger
 from langchain_core.messages import AIMessage
 
+from app.agent.orchestrator import _stringify_content
 from app.config.settings import REDIS_AGENT_URL
 
 logger = get_task_logger(__name__)
@@ -205,8 +206,8 @@ async def _run_agent_async(
                     (msg for msg in reversed(final_messages) if isinstance(msg, AIMessage)),
                     None,
                 )
-                if last_ai and isinstance(last_ai.content, str):
-                    final_ai_content = last_ai.content
+                if last_ai:
+                    final_ai_content = _stringify_content(last_ai.content)
 
             answer = _normalize_answer_text(final_ai_content or "".join(token_buffer))
             result = {

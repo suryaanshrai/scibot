@@ -115,6 +115,7 @@ reload_collection(username, collection_name, config, password)          -> Colle
 
 from __future__ import annotations
 
+import logging
 import pickle
 import re as _re
 import shutil
@@ -136,6 +137,8 @@ from app.users.collections_db import (
     save_collection,
     update_collection_data,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ── Input TypedDicts ──────────────────────────────────────────────────────────
@@ -598,7 +601,7 @@ def _load_dynamic_sources(
         except Exception as exc:
             msg = f"dynamic_source {src.get('source_type')!r} / {src.get('file_path') or src.get('credential_key')!r}: {exc}"
             errors.append(msg)
-            print(f"[collection] ERROR loading {msg}", file=sys.stderr)
+            logger.error("Source load error — %s", msg, exc_info=True)
 
     return entries, errors
 
@@ -691,7 +694,7 @@ def _load_all_sources(
             except Exception as exc:
                 msg = f"{src_type} {label!r}: {exc}"
                 errors.append(msg)
-                print(f"[collection] ERROR loading {msg}", file=sys.stderr)
+                logger.error("Source load error — %s", msg, exc_info=True)
                 continue
 
             # result is either (docs, entry) or (docs, list[entry])

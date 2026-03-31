@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from app.api.chat_db import (
     ChatDatabaseUnavailable,
     append_message,
+    clear_messages,
     create_chat,
     delete_chat,
     get_chat,
@@ -115,6 +116,41 @@ async def delete_chat_endpoint(
         _raise_chat_db_http_error(exc)
     if not deleted:
         raise HTTPException(status_code=404, detail="Chat not found")
+
+
+@router.post("/{chat_id}/clear", status_code=204)
+async def clear_chat_messages(
+    chat_id: str,
+    user: AuthUser = Depends(get_current_user),
+) -> None:
+    """Delete all messages for a chat and wipe the LangGraph checkpoint state,
+    so the LLM starts fresh on the next turn."""
+    try:
+        chat = await get_chat(chat_id, user.username)
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    # Clear MongoDB messages
+    try:
+        await clear_messages(chat_id)
+    except ChatDatabaseUnavailable as exc:
+        _raise_chat_db_http_error(exc)
+
+    # Wipe LangGraph Redis checkpoint state for this thread
+    thread_key = f"{user.username}:{chat_id}"
+    r = aioredis.from_url(REDIS_AGENT_URL, decode_responses=True)
+    try:
+        cursor = 0
+        while True:
+            cursor, keys = await r.scan(cursor, match=f"*{thread_key}*", count=100)
+            if keys:
+                await r.delete(*keys)
+            if cursor == 0:
+                break
+    finally:
+        await r.aclose()
 
 
 @router.get("/{chat_id}/messages", response_model=list[MessageOut])

@@ -61,6 +61,7 @@ Design notes
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 import pickle
 import re as _re
 import sys
@@ -73,6 +74,8 @@ from langchain_core.documents import Document
 from app.config.store import get_store
 from app.users.collections_db import load_collection, update_collection_data
 from app.users.config import resolve_config
+
+logger = logging.getLogger(__name__)
 
 
 # ── TypedDicts ────────────────────────────────────────────────────────────────
@@ -450,9 +453,8 @@ def _flush_chunk_batch(
             entry["ingested_at"] = ingested_at
         return len(batch), len(all_chunks), []
     except Exception as exc:
-        print(
-            f"[ingestion] WARNING: batched store.add_documents failed; falling back to per-source writes: {exc}",
-            file=sys.stderr,
+        logger.warning(
+            "Batched store.add_documents failed; falling back to per-source writes: %s", exc
         )
 
     errors: list[str] = []
@@ -467,7 +469,7 @@ def _flush_chunk_batch(
         except Exception as source_exc:
             msg = f"{src_type} {_entry_source_label(entry)!r}: {source_exc}"
             errors.append(msg)
-            print(f"[ingestion] ERROR ingesting {msg}", file=sys.stderr)
+            logger.error("Ingestion error — %s", msg, exc_info=True)
 
     return ingested_source_count, total_chunks, errors
 
@@ -517,7 +519,7 @@ def _ingest_entries(
         except Exception as exc:
             msg = f"{src_type} {_entry_source_label(entry)!r}: {exc}"
             all_errors.append(msg)
-            print(f"[ingestion] ERROR ingesting {msg}", file=sys.stderr)
+            logger.error("Ingestion error — %s", msg, exc_info=True)
 
     if pending_batch:
         batch_sources, batch_chunks, batch_errors = _flush_chunk_batch(

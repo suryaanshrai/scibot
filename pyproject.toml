@@ -55,4 +55,6 @@ dependencies = [
     "uvicorn[standard]>=0.34.0",
     "motor>=3.7.0",
     "python-multipart>=0.0.20",
+    "fastmcp>=2.0.0",
+    "flower>=2.0.1",
 ]

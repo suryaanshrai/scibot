@@ -29,10 +29,13 @@ from __future__ import annotations
 
 import csv as _csv
 import json as _json
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Required, TypedDict
+
+logger = logging.getLogger(__name__)
 
 
 # ── TypedDicts ────────────────────────────────────────────────────────────────
@@ -481,10 +484,7 @@ def load_dynamic_source(
 
     except Exception as exc:
         analysis_error = f"{type(exc).__name__}: {exc}"
-        print(
-            f"[dynamic_data] WARNING — analysis failed for {source_type!r} source: {exc}",
-            file=sys.stderr,
-        )
+        logger.warning("Analysis failed for %r source: %s", source_type, exc, exc_info=True)
 
     if analysis_error:
         entry["description"] = f"Auto-analysis failed: {analysis_error}"

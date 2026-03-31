@@ -25,10 +25,13 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 from urllib.parse import parse_qs, urlparse
 
 from langchain_community.document_loaders import YoutubeLoader
 from langchain_core.documents import Document
+
+logger = logging.getLogger(__name__)
 
 
 # ── URL helpers ───────────────────────────────────────────────────────────────
@@ -75,7 +78,8 @@ def _get_video_metadata(url: str) -> dict:
             "publish_date": str(yt.publish_date.date()) if yt.publish_date else "Unknown",
             "thumbnail_url": yt.thumbnail_url or "",
         }
-    except Exception:
+    except Exception as exc:
+        logger.warning("Could not fetch YouTube metadata for %s: %s", url, exc)
         return {}
 
 
@@ -94,9 +98,10 @@ def _load_single_video(
             language=langs,
         )
         docs = loader.load()
-    except Exception:
+    except Exception as exc:
         # Transcript unavailable for this video — return an empty list so
         # playlist processing can continue with the remaining videos.
+        logger.warning("YouTube transcript unavailable for %s: %s", url, exc)
         return []
 
     if not docs:

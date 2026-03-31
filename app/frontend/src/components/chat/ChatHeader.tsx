@@ -1,21 +1,31 @@
 import { useState } from 'react'
-import { SlidersHorizontal, Pencil, Check, X } from 'lucide-react'
+import { SlidersHorizontal, Pencil, Check, X, Eraser } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { useChatStore } from '@/stores/chatStore'
 import { useAuthStore } from '@/stores/authStore'
 import { useConfigStore } from '@/stores/configStore'
 import { ChatSettingsSheet } from './ChatSettingsSheet'
 import { cn } from '@/lib/utils'
-import { updateChatTitle as updateChatTitleRequest } from '@/lib/api'
+import { updateChatTitle as updateChatTitleRequest, clearChatMessages } from '@/lib/api'
 
 interface ChatHeaderProps {
   chatId: string
 }
 
 export function ChatHeader({ chatId }: ChatHeaderProps) {
-  const { chats, updateChatTitle } = useChatStore()
+  const { chats, updateChatTitle, clearMessages } = useChatStore()
   const { username, authHeader, globalConfig } = useAuthStore()
   const { getChatConfig } = useConfigStore()
 
@@ -27,6 +37,7 @@ export function ChatHeader({ chatId }: ChatHeaderProps) {
   const [editing, setEditing] = useState(false)
   const [editVal, setEditVal] = useState(chat?.title ?? '')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [clearOpen, setClearOpen] = useState(false)
 
   const startEdit = () => {
     setEditVal(chat?.title ?? '')
@@ -42,6 +53,14 @@ export function ChatHeader({ chatId }: ChatHeaderProps) {
   }
 
   const cancelEdit = () => setEditing(false)
+
+  const handleClear = async () => {
+    if (username && authHeader) {
+      await clearChatMessages({ username, authHeader }, chatId)
+      clearMessages(chatId)
+    }
+    setClearOpen(false)
+  }
 
   return (
     <>
@@ -78,6 +97,17 @@ export function ChatHeader({ chatId }: ChatHeaderProps) {
           {activeProvider}/{activeLLM}
         </Badge>
 
+        {/* Clear history */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 shrink-0"
+          onClick={() => setClearOpen(true)}
+          title="Clear chat history"
+        >
+          <Eraser size={16} />
+        </Button>
+
         {/* Settings */}
         <Button
           variant="ghost"
@@ -89,6 +119,22 @@ export function ChatHeader({ chatId }: ChatHeaderProps) {
           <SlidersHorizontal size={16} />
         </Button>
       </div>
+
+      <AlertDialog open={clearOpen} onOpenChange={setClearOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear chat history?</AlertDialogTitle>
+            <AlertDialogDescription>
+              All messages in this chat will be permanently deleted and the AI will
+              lose all context from this conversation. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleClear}>Clear history</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <ChatSettingsSheet chatId={chatId} open={settingsOpen} onOpenChange={setSettingsOpen} />
     </>

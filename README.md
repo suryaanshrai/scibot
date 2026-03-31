@@ -57,11 +57,15 @@ docker compose -f docker-compose.dependencies.yml up -d
 # In another terminal
 uv run python app/main.py
 
-# In another terminal
-celery -A app.workers.ingestion_worker.celery_app worker -Q ingestion --pool=prefork -c 4 -l info --without-gossip --without-mingle
+# In another terminal (Windows local development)
+celery -A app.workers.ingestion_worker.celery_app worker -Q ingestion --pool=solo -l info --without-gossip --without-mingle
 
-# In another terminal
-celery -A app.workers.agent_worker.celery_app worker -Q agent --pool=prefork -c 2 -l info --without-gossip --without-mingle
+# In another terminal (Windows local development)
+celery -A app.workers.agent_worker.celery_app worker -Q agent --pool=solo -l info --without-gossip --without-mingle
+
+# On Linux or inside Docker, prefork concurrency is fine instead:
+# celery -A app.workers.ingestion_worker.celery_app worker -Q ingestion --pool=prefork -c 4 -l info --without-gossip --without-mingle
+# celery -A app.workers.agent_worker.celery_app worker -Q agent --pool=prefork -c 2 -l info --without-gossip --without-mingle
 
 # And finally, the frontend (this too in another terminal)
 cd app/frontend

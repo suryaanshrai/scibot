@@ -17,6 +17,7 @@ interface ChatState {
   createChat: (chat: ChatMeta) => void
   deleteChat: (chatId: string) => void
   updateChatTitle: (chatId: string, title: string) => void
+  clearMessages: (chatId: string) => void
 
   addMessage: (msg: Message) => void
   appendToken: (chatId: string, msgId: string, token: string) => void
@@ -69,6 +70,9 @@ export const useChatStore = create<ChatState>((set) => ({
     set((s) => ({
       chats: s.chats.map((c) => (c.chatId === chatId ? { ...c, title, updatedAt: new Date().toISOString() } : c)),
     })),
+
+  clearMessages: (chatId) =>
+    set((s) => ({ messages: { ...s.messages, [chatId]: [] } })),
 
   addMessage: (msg) =>
     set((s) => {

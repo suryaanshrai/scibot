@@ -54,6 +54,31 @@ from app.users.config import resolve_config
 
 logger = logging.getLogger(__name__)
 
+
+def _stringify_content(content: object) -> str:
+    """
+    Normalise an LLM message content value to a plain string.
+
+    LangChain models (Gemini, Claude, etc.) sometimes return content as a list
+    of content blocks instead of a bare string, e.g.:
+      [{"type": "text", "text": "Hello"}, {"type": "thinking", "thinking": "..."}]
+    This helper extracts and joins the text parts so callers always get a str.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+        return "\n".join(p for p in parts if p)
+    return str(content) if content else ""
+
+
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
@@ -484,8 +509,21 @@ def _call_model(state: AgentState, llm_with_tools: Any) -> dict:
     Call the LLM with the full message history and an injected system prompt
     that includes the current source manifest (if any).
     """
-    messages = state["messages"]
+    raw_messages = state["messages"]
     source_records: list[SourceRecord] = state.get("source_records") or []
+
+    # Strip SystemMessages injected by recall_memories out of the message chain.
+    # They accumulate across turns and cause strict-ordering errors on Gemini
+    # (which maps SystemMessage → "user" role, creating invalid tool-call sequences).
+    # Their content is rebuilt fresh each turn, so we merge it into the system prompt.
+    recall_context_parts: list[str] = []
+    messages: list = []
+    for m in raw_messages:
+        if isinstance(m, SystemMessage):
+            if isinstance(m.content, str) and m.content.strip():
+                recall_context_parts.append(m.content.strip())
+        else:
+            messages.append(m)
 
     # Build dynamic system prompt
     parts = [ORCHESTRATOR_SYSTEM]
@@ -494,10 +532,12 @@ def _call_model(state: AgentState, llm_with_tools: Any) -> dict:
     manifest = _build_source_manifest(source_records)
     if manifest:
         parts.append(f"\n{manifest}")
+    if recall_context_parts:
+        parts.append("\n" + "\n\n".join(recall_context_parts))
     system_content = "\n".join(parts)
 
     response = llm_with_tools.invoke(
-        [SystemMessage(content=system_content)] + list(messages)
+        [SystemMessage(content=system_content)] + messages
     )
     return {"messages": [response]}
 
@@ -573,9 +613,7 @@ async def _run_checker(
     if last_ai is None or not original_query:
         return {}
 
-    draft_answer = (
-        last_ai.content if isinstance(last_ai.content, str) else ""
-    )
+    draft_answer = _stringify_content(last_ai.content)
     source_records: list[SourceRecord] = state.get("source_records") or []
     sources_manifest = _build_source_manifest(source_records)
 
@@ -657,15 +695,17 @@ async def _finalize(
         last_ai = next(
             (m for m in reversed(messages) if isinstance(m, AIMessage)), None
         )
-        if last_ai and isinstance(last_ai.content, str):
-            try:
-                await store.aput(
-                    (username, "research_notes"),
-                    str(uuid.uuid4()),
-                    {"memory": last_ai.content[:500]},
-                )
-            except Exception:
-                logger.exception("finalize: store.aput failed — skipping")
+        if last_ai:
+            ai_text = _stringify_content(last_ai.content)
+            if ai_text:
+                try:
+                    await store.aput(
+                        (username, "research_notes"),
+                        str(uuid.uuid4()),
+                        {"memory": ai_text[:500]},
+                    )
+                except Exception:
+                    logger.exception("finalize: store.aput failed — skipping")
 
     # ── 3. Append ## Sources to last AI message ──────────────────────────────
     source_records: list[SourceRecord] = state.get("source_records") or []
@@ -676,17 +716,18 @@ async def _finalize(
         (m for m in reversed(current_messages) if isinstance(m, AIMessage)), None
     )
 
-    if last_ai and visible_records and isinstance(last_ai.content, str):
+    if last_ai and visible_records:
+        last_ai_text = _stringify_content(last_ai.content)
         # Only list sources that are actually cited in the text ([N])
         cited_ids = set(
-            int(m) for m in re.findall(r"\[(\d+)\]", last_ai.content)
+            int(m) for m in re.findall(r"\[(\d+)\]", last_ai_text)
         )
         cited_records = [r for r in visible_records if r.ref_id in cited_ids]
         if cited_records:
             ref_lines = "\n".join(
                 f"[{r.ref_id}] {r.title} — {r.url}" for r in cited_records
             )
-            new_content = last_ai.content.rstrip() + f"\n\n## Sources\n{ref_lines}"
+            new_content = last_ai_text.rstrip() + f"\n\n## Sources\n{ref_lines}"
             updated_ai = AIMessage(content=new_content, id=last_ai.id)
             existing_messages = updates.get("messages", [])
             updates["messages"] = list(existing_messages) + [updated_ai]
@@ -998,14 +1039,13 @@ class OrchestratorAgent:
                 # data is (message_chunk, metadata)
                 msg_chunk = data[0] if isinstance(data, tuple) else data
                 metadata = data[1] if isinstance(data, tuple) and len(data) > 1 else {}
-                content = getattr(msg_chunk, "content", "")
                 if (
-                    content
-                    and isinstance(content, str)
-                    and isinstance(msg_chunk, (AIMessage, AIMessageChunk))
+                    isinstance(msg_chunk, (AIMessage, AIMessageChunk))
                     and metadata.get("langgraph_node") == "call_model"
                 ):
-                    yield content
+                    content_str = _stringify_content(getattr(msg_chunk, "content", ""))
+                    if content_str:
+                        yield content_str
 
             elif kind == "updates":
                 if "run_tools" in data:

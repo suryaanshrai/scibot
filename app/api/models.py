@@ -171,6 +171,7 @@ class IngestStatusResponse(BaseModel):
     status: str
     result: dict[str, Any] | None = None
     error: str | None = None
+    source_errors: list[str] | None = None
 
 
 # ── Chats ─────────────────────────────────────────────────────────────────────
