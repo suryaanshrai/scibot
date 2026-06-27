@@ -1,7 +1,7 @@
 {
 	"servers": {
-		"my-mcp-server-4562975e": {
-			"url": "http://localhost:8080/mcp/suryaansh1",
+		"my-mcp-server-b46d7829": {
+			"url": "http://localhost:8080/mcp/demo",
 			"type": "http"
 		}
 	},

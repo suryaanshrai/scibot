@@ -101,6 +101,15 @@ Citation rules (MANDATORY):
 4. End every research answer with a ## Sources section listing only the
    sources you actually cited.
 
+Formatting rules (MANDATORY):
+- Always format responses using Markdown.
+- Use ## for top-level section headers and ### for sub-sections.
+- Use **bold** for key terms, concepts, and important findings.
+- Use bullet lists (- item) or numbered lists (1. item) wherever items are enumerable.
+- Use code blocks (triple backticks) for code, equations, file paths, or structured data.
+- Use tables for comparative data when 3+ items share the same attributes.
+- Keep responses well-structured and scannable; avoid walls of unbroken prose.
+
 Tool selection guidance:
 - If an active chat collection is provided in context, treat it as the default
     target for ambiguous follow-up questions such as "what is the paper about?"
@@ -212,9 +221,13 @@ def _build_active_collection_context(username: str, collection_name: str) -> str
 
         data = load_collection(username, collection_name) or {}
         source_labels: list[str] = []
-        for paper in (data.get("papers") or [])[:6]:
+        ref_labels: list[str] = []
+        for paper in data.get("papers") or []:
             title = paper.get("title") or paper.get("source_url") or "paper"
             source_labels.append(str(title))
+            for ref in paper.get("references") or []:
+                ref_title = ref.get("title") or ref.get("id") or "reference"
+                ref_labels.append(str(ref_title))
         for video in (data.get("youtube") or [])[:4]:
             title = video.get("title") or video.get("url") or "youtube"
             source_labels.append(str(title))
@@ -224,9 +237,12 @@ def _build_active_collection_context(username: str, collection_name: str) -> str
             f"Default collection for this chat: `{collection_name}`.",
             "For ambiguous follow-up questions, call `search_storage` on this collection before answering.",
         ]
-        if source_labels:
-            lines.append("Known items in this collection:")
+        if source_labels or ref_labels:
+            lines.append("Known items in this collection (all are searchable via `search_storage`):")
             lines.extend(f"- {label}" for label in source_labels)
+            if ref_labels:
+                lines.append("Referenced papers also ingested (searchable):")
+                lines.extend(f"  - {label}" for label in ref_labels[:20])
 
         # ── Dynamic / queryable data sources ──────────────────────────────────
         dynamic_sources: list[dict] = data.get("dynamic_data_sources") or []

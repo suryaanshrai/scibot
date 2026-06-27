@@ -27,8 +27,9 @@ from typing import Any
 
 from app.config.settings import (
     CHROMA_HOST,
-    CHROMA_PERSIST_DIRECTORY,
+    # CHROMA_PERSIST_DIRECTORY,
     CHROMA_PORT,
+    CHROMA_URL,
     DEFAULT_STORE_COLLECTION,
     DEFAULT_STORE_NAMESPACE,
     DEFAULT_STORE_PROVIDER,
@@ -216,6 +217,12 @@ def get_store(
         collection_metadata = {"hnsw:space": distance_function}
 
         chroma_host = cfg.get("chroma_host") or CHROMA_HOST
+        if not chroma_host and CHROMA_URL:
+            from urllib.parse import urlparse  # noqa: PLC0415
+            _parsed = urlparse(CHROMA_URL)
+            chroma_host = _parsed.hostname or CHROMA_URL
+            if _parsed.port and not cfg.get("chroma_port"):
+                cfg = {**cfg, "chroma_port": str(_parsed.port)}
         if chroma_host:
             import chromadb
 
@@ -229,11 +236,11 @@ def get_store(
                 **extra_kwargs,
             )
 
-        persist_dir = cfg.get("persist_directory") or CHROMA_PERSIST_DIRECTORY
+        # persist_dir = cfg.get("persist_directory") or CHROMA_PERSIST_DIRECTORY
         return Chroma(
             collection_name=collection_name,
             embedding_function=embedding,
-            persist_directory=persist_dir or None,
+            # persist_directory=persist_dir or None,
             collection_metadata=collection_metadata,
             **extra_kwargs,
         )

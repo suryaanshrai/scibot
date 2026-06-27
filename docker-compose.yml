@@ -4,8 +4,6 @@ services:
   redis-ingestion:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"
     volumes:
       - redis-ingestion-data:/data
     command: redis-server --appendonly yes --protected-mode no
@@ -14,13 +12,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 128m
 
   # ── Redis: agent queue (Redis Stack — RediSearch required by AsyncRedisSaver)
   redis-agent:
     image: redis/redis-stack-server:latest
     restart: unless-stopped
-    ports:
-      - "6380:6379"
     volumes:
       - redis-agent-data:/data
     environment:
@@ -30,13 +30,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512m
 
   # ── Chroma vector store ───────────────────────────────────────────────────
   chroma:
     image: chromadb/chroma:latest
     restart: unless-stopped
-    ports:
-      - "8000:8000"
     volumes:
       - chroma-data:/chroma/chroma
     environment:
@@ -47,87 +49,15 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-
-  # ── Ingestion worker ──────────────────────────────────────────────────────
-  worker-ingestion:
-    build: .
-    restart: unless-stopped
-    command: >
-      celery -A app.workers.ingestion_worker.celery_app worker
-      -Q ingestion --pool=prefork -c 4 -l info
-      --without-gossip --without-mingle
-    env_file: .env
-    environment:
-      REDIS_INGESTION_URL: redis://redis-ingestion:6379/0
-      REDIS_AGENT_URL: redis://redis-agent:6379/0
-      CHROMA_URL: http://chroma:8000
-    volumes:
-      - ./app/data:/app/app/data
-    depends_on:
-      redis-ingestion:
-        condition: service_healthy
-      chroma:
-        condition: service_healthy
-
-  # ── Agent worker ──────────────────────────────────────────────────────────
-  worker-agent:
-    build: .
-    restart: unless-stopped
-    command: >
-      celery -A app.workers.agent_worker.celery_app worker
-      -Q agent --pool=prefork -c 2 -l info
-      --without-gossip --without-mingle
-    env_file: .env
-    environment:
-      REDIS_INGESTION_URL: redis://redis-ingestion:6379/0
-      REDIS_AGENT_URL: redis://redis-agent:6379/0
-      CHROMA_URL: http://chroma:8000
-    volumes:
-      - ./app/data:/app/app/data
-    depends_on:
-      redis-agent:
-        condition: service_healthy
-      chroma:
-        condition: service_healthy
-
-  # ── Flower: monitor ingestion queue (port 5555) ───────────────────────────
-  flower-ingestion:
-    image: mher/flower:2.0
-    restart: unless-stopped
-    ports:
-      - "5555:5555"
-    command: >
-      celery flower
-      --broker=redis://redis-ingestion:6379/0
-      --port=5555
-    environment:
-      CELERY_APP: app.workers.ingestion_worker.celery_app
-    depends_on:
-      redis-ingestion:
-        condition: service_healthy
-
-  # ── Flower: monitor agent queue (port 5556) ───────────────────────────────
-  flower-agent:
-    image: mher/flower:2.0
-    restart: unless-stopped
-    ports:
-      - "5556:5555"
-    command: >
-      celery flower
-      --broker=redis://redis-agent:6379/0
-      --port=5555
-    environment:
-      CELERY_APP: app.workers.agent_worker.celery_app
-    depends_on:
-      redis-agent:
-        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
   # ── MongoDB: chat history ─────────────────────────────────────────────────
   mongodb:
     image: mongo:8
     restart: unless-stopped
-    ports:
-      - "27017:27017"
     volumes:
       - mongodb-data:/data/db
     healthcheck:
@@ -135,13 +65,69 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ── Ingestion worker ──────────────────────────────────────────────────────
+  # Concurrency reduced to 2 (from 4) to fit a 2-vCPU VPS without thrashing.
+  worker-ingestion:
+    build: .
+    restart: unless-stopped
+    command: >
+      celery -A app.workers.ingestion_worker.celery_app worker
+      -Q ingestion --pool=prefork -c 2 -l info
+      --without-gossip --without-mingle
+    env_file: .env
+    environment:
+      REDIS_INGESTION_URL: redis://redis-ingestion:6379/0
+      REDIS_AGENT_URL: redis://redis-agent:6379/0
+      CHROMA_URL: http://chroma:8000
+    volumes:
+      - ./app/data:/app/app/data
+    depends_on:
+      redis-ingestion:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1500m
+
+  # ── Agent worker ──────────────────────────────────────────────────────────
+  # Concurrency reduced to 1 (from 2) — LLM calls are network-bound; 1 process
+  # avoids redundant model loading overhead on a constrained VPS.
+  worker-agent:
+    build: .
+    restart: unless-stopped
+    command: >
+      celery -A app.workers.agent_worker.celery_app worker
+      -Q agent --pool=prefork -c 1 -l info
+      --without-gossip --without-mingle
+    env_file: .env
+    environment:
+      REDIS_INGESTION_URL: redis://redis-ingestion:6379/0
+      REDIS_AGENT_URL: redis://redis-agent:6379/0
+      CHROMA_URL: http://chroma:8000
+    volumes:
+      - ./app/data:/app/app/data
+    depends_on:
+      redis-agent:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
   # ── FastAPI application ───────────────────────────────────────────────────
+  # Port is NOT exposed directly — Caddy proxies it via the internal network.
   api:
     build: .
     restart: unless-stopped
-    ports:
-      - "8080:8080"
     command: uvicorn app.main:app --host 0.0.0.0 --port 8080
     env_file: .env
     environment:
@@ -160,9 +146,37 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  # ── Caddy: reverse proxy + automatic HTTPS ────────────────────────────────
+  # Set DOMAIN in your .env file (e.g. DOMAIN=scibot.example.com).
+  # Caddy will obtain and renew a Let's Encrypt certificate automatically.
+  # For a bare IP (no domain), replace Caddyfile content with ":80 { ... }".
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+    deploy:
+      resources:
+        limits:
+          memory: 128m
 
 volumes:
   chroma-data:
   redis-ingestion-data:
   redis-agent-data:
   mongodb-data:
+  caddy-data:
+  caddy-config:

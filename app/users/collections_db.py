@@ -91,8 +91,11 @@ def list_collections(username: str) -> list[dict]:
     result: list[dict] = []
     for row in rows:
         data = json.loads(row["data"])
+        papers = data.get("papers") or []
+        reference_count = sum(len(p.get("references") or []) for p in papers)
         source_counts = {
-            "papers":      len(data.get("papers", [])),
+            "papers":      len(papers),
+            "references":  reference_count,
             "youtube":     len(data.get("youtube", [])),
             "github_repos": len(data.get("github_repos", [])),
             "webpages":    len(data.get("webpages", [])),

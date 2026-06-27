@@ -1,0 +1,38 @@
+# =============================================================================
+# Caddyfile — SciBot reverse proxy
+#
+# Set DOMAIN in your .env file before starting (e.g. DOMAIN=scibot.example.com).
+# Caddy will automatically obtain and renew a Let's Encrypt TLS certificate.
+#
+# If you don't have a domain yet and want to run over plain HTTP on the VPS IP,
+# replace "{$DOMAIN}" with ":80" (no TLS) or ":443" (self-signed TLS).
+# =============================================================================
+
+{$DOMAIN} {
+
+    # --- Compression ---
+    encode gzip
+
+    # --- Reverse proxy to FastAPI ---
+    reverse_proxy api:8080 {
+        # Increase timeouts for long-running agent/ingestion requests
+        transport http {
+            read_timeout  300s
+            write_timeout 300s
+        }
+
+        # Forward real client IP to the app
+        header_up X-Real-IP        {remote_host}
+        header_up X-Forwarded-For  {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # --- Security headers ---
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options    "nosniff"
+        X-Frame-Options           "SAMEORIGIN"
+        Referrer-Policy           "strict-origin-when-cross-origin"
+        -Server
+    }
+}

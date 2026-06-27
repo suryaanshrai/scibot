@@ -119,7 +119,6 @@ def _build_mcp_app(username: str, chat_name: str | None = None) -> FastMCP:
             "filter": filter,
         })
 
-    # ── Collection browsing tools (demo-friendly) ─────────────────────────
 
     @mcp.tool
     async def list_collections() -> str:

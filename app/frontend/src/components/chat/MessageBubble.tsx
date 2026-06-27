@@ -101,26 +101,72 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                     </>
                   )
                 },
+                p: ({ children }) => (
+                  <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>
+                ),
+                h1: ({ children }) => (
+                  <h1 className="font-bold text-base mt-4 mb-2 border-b pb-1">{children}</h1>
+                ),
+                h2: ({ children }) => (
+                  <h2 className="font-semibold text-sm mt-4 mb-2 border-b pb-1">{children}</h2>
+                ),
+                h3: ({ children }) => (
+                  <h3 className="font-semibold text-sm mt-3 mb-1">{children}</h3>
+                ),
+                h4: ({ children }) => (
+                  <h4 className="font-medium text-sm mt-2 mb-1 text-muted-foreground">{children}</h4>
+                ),
+                ul: ({ children }) => (
+                  <ul className="list-disc list-outside space-y-1 mb-2 ml-4">{children}</ul>
+                ),
+                ol: ({ children }) => (
+                  <ol className="list-decimal list-outside space-y-1 mb-2 ml-4">{children}</ol>
+                ),
+                li: ({ children }) => (
+                  <li className="leading-relaxed pl-1">{children}</li>
+                ),
+                blockquote: ({ children }) => (
+                  <blockquote className="border-l-2 border-primary/40 pl-3 italic text-muted-foreground my-2">
+                    {children}
+                  </blockquote>
+                ),
+                hr: () => <hr className="border-border my-3" />,
+                strong: ({ children }) => (
+                  <strong className="font-semibold">{children}</strong>
+                ),
+                em: ({ children }) => (
+                  <em className="italic">{children}</em>
+                ),
+                table: ({ children }) => (
+                  <div className="overflow-x-auto my-2">
+                    <table className="w-full text-xs border-collapse">{children}</table>
+                  </div>
+                ),
+                thead: ({ children }) => (
+                  <thead className="bg-muted">{children}</thead>
+                ),
+                th: ({ children }) => (
+                  <th className="border border-border px-2 py-1.5 font-semibold text-left">{children}</th>
+                ),
+                td: ({ children }) => (
+                  <td className="border border-border px-2 py-1.5">{children}</td>
+                ),
                 a: ({ href, children }) => (
                   <a href={href} target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2 inline-flex items-center gap-0.5">
                     {children}
                     <ExternalLink size={10} />
                   </a>
                 ),
+                pre: ({ children }) => (
+                  <pre className="bg-muted rounded p-3 overflow-x-auto text-xs my-2">{children}</pre>
+                ),
                 code: ({ children, className }) => {
                   const isBlock = className?.includes('language-')
                   if (isBlock) {
-                    return (
-                      <pre className="bg-muted rounded p-3 overflow-x-auto text-xs my-2">
-                        <code>{children}</code>
-                      </pre>
-                    )
+                    return <code>{children}</code>
                   }
                   return <code className="bg-muted rounded px-1 py-0.5 text-xs font-mono">{children}</code>
                 },
-                h2: ({ children }) => (
-                  <h2 className="font-semibold text-sm mt-4 mb-2 border-b pb-1">{children}</h2>
-                ),
               }}
             >
               {message.content}
