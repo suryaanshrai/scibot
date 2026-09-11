@@ -195,7 +195,7 @@ def get_store(
     """
     cfg = config or {}
 
-    provider = cfg.get("provider") or DEFAULT_STORE_PROVIDER or "chroma"
+    provider = cfg.get("provider") or DEFAULT_STORE_PROVIDER or "postgres"
     _get_registry_entry(provider)  # validate
 
     collection_name = cfg.get("collection_name") or DEFAULT_STORE_COLLECTION or "scibot"

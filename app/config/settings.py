@@ -20,7 +20,7 @@ DEFAULT_EMBEDDING_MODEL = get_env("DEFAULT_EMBEDDING_MODEL")
 DEFAULT_EMBEDDING_DIMENSIONS = get_env("DEFAULT_EMBEDDING_DIMENSIONS")
 
 # ── Store defaults ─────────────────────────────────────────────────────────────
-DEFAULT_STORE_PROVIDER = get_env("DEFAULT_STORE_PROVIDER", "chroma")
+DEFAULT_STORE_PROVIDER = get_env("DEFAULT_STORE_PROVIDER", "postgres")
 DEFAULT_STORE_COLLECTION = get_env("DEFAULT_STORE_COLLECTION", "scibot")
 DEFAULT_STORE_NAMESPACE = get_env("DEFAULT_STORE_NAMESPACE", "")
 
@@ -81,11 +81,9 @@ SERPAPI_API_KEY = get_env("SERPAPI_API_KEY")
 # GitHub personal access token — required by GithubFileLoader
 GITHUB_TOKEN = get_env("GITHUB_TOKEN")
 
-# ── Background workers (Redis brokers) ───────────────────────────────────────
-# Separate Redis instances keep ingestion and agent queues isolated
-REDIS_INGESTION_URL = get_env("REDIS_INGESTION_URL", "redis://127.0.0.1:6379/0")
-REDIS_AGENT_URL = get_env("REDIS_AGENT_URL", "redis://127.0.0.1:6380/0")
+# ── Background workers (Redis broker — single instance shared by both workers)
+REDIS_URL = get_env("REDIS_URL", "redis://127.0.0.1:6379/0")
 
-# ── Chat history (MongoDB via Motor) ─────────────────────────────────────────
-MONGODB_CHAT_URL = get_env("MONGODB_CHAT_URL", "mongodb://127.0.0.1:27017")
-MONGODB_CHAT_DB_NAME = get_env("MONGODB_CHAT_DB_NAME", "scibot_chats")
+# ── PostgreSQL async DSN (asyncpg + LangGraph checkpoint)
+# Format: postgresql://user:pass@host:5432/dbname
+POSTGRES_ASYNC_URL = get_env("POSTGRES_ASYNC_URL", "postgresql://127.0.0.1:5432/scibot")

@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime, timezone
 import re
 import unicodedata
 from uuid import uuid4
 
-from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import PyMongoError
+import asyncpg
 
-from app.config.settings import MONGODB_CHAT_DB_NAME, MONGODB_CHAT_URL
+from app.config.settings import POSTGRES_ASYNC_URL
 
-_MONGO_TIMEOUT_MS = 5_000
-_client: AsyncIOMotorClient | None = None
-_db = None
+_pool: asyncpg.Pool | None = None
+_pool_lock = asyncio.Lock()
 
 
 class ChatDatabaseUnavailable(RuntimeError):
@@ -21,42 +21,106 @@ class ChatDatabaseUnavailable(RuntimeError):
 
 def _raise_chat_db_unavailable(action: str, exc: Exception) -> None:
     raise ChatDatabaseUnavailable(
-        f"Chat database unavailable while {action}. Ensure MongoDB is running and MONGODB_CHAT_URL is reachable."
+        f"Chat database unavailable while {action}. "
+        "Ensure PostgreSQL is running and POSTGRES_ASYNC_URL is reachable."
     ) from exc
 
 
-def _get_db():
-    global _client, _db
-    if _db is None:
-        _client = AsyncIOMotorClient(
-            MONGODB_CHAT_URL,
-            serverSelectionTimeoutMS=_MONGO_TIMEOUT_MS,
-            connectTimeoutMS=_MONGO_TIMEOUT_MS,
-            socketTimeoutMS=_MONGO_TIMEOUT_MS,
-        )
-        _db = _client[MONGODB_CHAT_DB_NAME]
-    return _db
+# ── Connection pool ───────────────────────────────────────────────────────────
+
+async def _get_pool() -> asyncpg.Pool:
+    global _pool
+    if _pool is not None:
+        return _pool
+    async with _pool_lock:
+        if _pool is None:
+            try:
+                pool = await asyncpg.create_pool(
+                    POSTGRES_ASYNC_URL,
+                    min_size=2,
+                    max_size=10,
+                    command_timeout=10,
+                    init=_init_connection,
+                )
+                _pool = pool
+            except Exception as exc:
+                _raise_chat_db_unavailable("connecting to PostgreSQL", exc)
+    return _pool
+
+
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """Register JSONB codec so Python dicts are transparently serialised."""
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema="pg_catalog",
+    )
+
+
+# ── Schema bootstrap ──────────────────────────────────────────────────────────
+
+_DDL = """
+CREATE TABLE IF NOT EXISTS scibot_chats (
+    chat_id         TEXT        PRIMARY KEY,
+    chat_slug       TEXT,
+    username        TEXT        NOT NULL,
+    title           TEXT,
+    collection_name TEXT,
+    config_override JSONB,
+    created_at      TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scibot_chats_username
+    ON scibot_chats (username);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scibot_chats_username_slug
+    ON scibot_chats (username, chat_slug)
+    WHERE chat_slug IS NOT NULL AND chat_slug <> '';
+
+CREATE TABLE IF NOT EXISTS scibot_messages (
+    message_id     TEXT        PRIMARY KEY,
+    chat_id        TEXT        NOT NULL
+                               REFERENCES scibot_chats(chat_id) ON DELETE CASCADE,
+    role           TEXT        NOT NULL,
+    content        TEXT        NOT NULL DEFAULT '',
+    timestamp      TIMESTAMPTZ NOT NULL,
+    task_id        TEXT,
+    source_records JSONB,
+    interrupted    BOOLEAN     NOT NULL DEFAULT FALSE,
+    status         TEXT        NOT NULL DEFAULT 'completed'
+);
+
+CREATE INDEX IF NOT EXISTS idx_scibot_messages_chat_ts
+    ON scibot_messages (chat_id, timestamp);
+"""
 
 
 async def init_chat_db() -> None:
     try:
-        db = _get_db()
-        await db.command("ping")
-        await db.chats.create_index([("username", 1)])
-        await db.chats.create_index([("chat_id", 1)], unique=True)
-        await db.chats.create_index([("username", 1), ("chat_slug", 1)], unique=True, sparse=True)
-        await db.messages.create_index([("chat_id", 1), ("timestamp", 1)])
-        await _backfill_missing_chat_slugs()
-    except PyMongoError as exc:
-        _raise_chat_db_unavailable("initializing chat indexes", exc)
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(_DDL)
+            await _backfill_missing_chat_slugs(conn)
+    except ChatDatabaseUnavailable:
+        raise
+    except Exception as exc:
+        _raise_chat_db_unavailable("initialising chat tables", exc)
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _strip_id(doc: dict) -> dict:
-    return {k: v for k, v in doc.items() if k != "_id"}
+def _row(record: asyncpg.Record | None) -> dict | None:
+    return dict(record) if record else None
+
+
+def _rows(records) -> list[dict]:
+    return [dict(r) for r in records]
 
 
 def _slugify(value: str | None) -> str:
@@ -67,55 +131,47 @@ def _slugify(value: str | None) -> str:
 
 
 async def _build_unique_chat_slug(
+    conn: asyncpg.Connection,
     username: str,
     title: str | None,
     *,
     exclude_chat_id: str | None = None,
 ) -> str:
-    try:
-        db = _get_db()
-        base = _slugify(title)
-        slug = base
-        suffix = 2
+    base = _slugify(title)
+    slug = base
+    suffix = 2
+    while True:
+        if exclude_chat_id:
+            existing = await conn.fetchval(
+                "SELECT 1 FROM scibot_chats "
+                "WHERE username=$1 AND chat_slug=$2 AND chat_id<>$3",
+                username, slug, exclude_chat_id,
+            )
+        else:
+            existing = await conn.fetchval(
+                "SELECT 1 FROM scibot_chats WHERE username=$1 AND chat_slug=$2",
+                username, slug,
+            )
+        if not existing:
+            return slug
+        slug = f"{base}-{suffix}"
+        suffix += 1
 
-        while True:
-            query: dict = {"username": username, "chat_slug": slug}
-            if exclude_chat_id:
-                query["chat_id"] = {"$ne": exclude_chat_id}
-            existing = await db.chats.find_one(query, {"_id": 1})
-            if not existing:
-                return slug
-            slug = f"{base}-{suffix}"
-            suffix += 1
-    except PyMongoError as exc:
-        _raise_chat_db_unavailable("checking for duplicate chat slugs", exc)
 
-
-async def _backfill_missing_chat_slugs() -> None:
-    try:
-        db = _get_db()
-        cursor = db.chats.find(
-            {
-                "$or": [
-                    {"chat_slug": {"$exists": False}},
-                    {"chat_slug": None},
-                    {"chat_slug": ""},
-                ]
-            },
-            {"chat_id": 1, "username": 1, "title": 1},
+async def _backfill_missing_chat_slugs(conn: asyncpg.Connection) -> None:
+    rows = await conn.fetch(
+        "SELECT chat_id, username, title FROM scibot_chats "
+        "WHERE chat_slug IS NULL OR chat_slug = ''"
+    )
+    for row in rows:
+        slug = await _build_unique_chat_slug(
+            conn, row["username"], row["title"],
+            exclude_chat_id=row["chat_id"],
         )
-        async for doc in cursor:
-            slug = await _build_unique_chat_slug(
-                doc["username"],
-                doc.get("title"),
-                exclude_chat_id=doc["chat_id"],
-            )
-            await db.chats.update_one(
-                {"chat_id": doc["chat_id"]},
-                {"$set": {"chat_slug": slug}},
-            )
-    except PyMongoError as exc:
-        _raise_chat_db_unavailable("backfilling chat slugs", exc)
+        await conn.execute(
+            "UPDATE scibot_chats SET chat_slug=$1 WHERE chat_id=$2",
+            slug, row["chat_id"],
+        )
 
 
 # ── Chats CRUD ────────────────────────────────────────────────────────────────
@@ -127,11 +183,24 @@ async def create_chat(
     config_override: dict | None = None,
 ) -> dict:
     try:
-        db = _get_db()
+        pool = await _get_pool()
         now = _now()
         chat_id = uuid4().hex
-        chat_slug = await _build_unique_chat_slug(username, title, exclude_chat_id=chat_id)
-        doc = {
+        async with pool.acquire() as conn:
+            chat_slug = await _build_unique_chat_slug(
+                conn, username, title, exclude_chat_id=chat_id
+            )
+            await conn.execute(
+                """
+                INSERT INTO scibot_chats
+                    (chat_id, chat_slug, username, title, collection_name,
+                     config_override, created_at, updated_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                """,
+                chat_id, chat_slug, username, title, collection_name,
+                config_override, now, now,
+            )
+        return {
             "chat_id": chat_id,
             "chat_slug": chat_slug,
             "username": username,
@@ -141,85 +210,124 @@ async def create_chat(
             "created_at": now,
             "updated_at": now,
         }
-        await db.chats.insert_one(doc)
-        return _strip_id(doc)
-    except PyMongoError as exc:
+    except ChatDatabaseUnavailable:
+        raise
+    except Exception as exc:
         _raise_chat_db_unavailable("creating a chat", exc)
 
 
 async def get_chat(chat_id: str, username: str) -> dict | None:
     try:
-        db = _get_db()
-        doc = await db.chats.find_one({"chat_id": chat_id, "username": username})
-        return _strip_id(doc) if doc else None
-    except PyMongoError as exc:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM scibot_chats WHERE chat_id=$1 AND username=$2",
+                chat_id, username,
+            )
+        return _row(row)
+    except ChatDatabaseUnavailable:
+        raise
+    except Exception as exc:
         _raise_chat_db_unavailable("loading a chat", exc)
 
 
 async def get_chat_by_slug(chat_slug: str, username: str) -> dict | None:
     try:
-        db = _get_db()
-        doc = await db.chats.find_one({"chat_slug": chat_slug, "username": username})
-        return _strip_id(doc) if doc else None
-    except PyMongoError as exc:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM scibot_chats WHERE chat_slug=$1 AND username=$2",
+                chat_slug, username,
+            )
+        return _row(row)
+    except ChatDatabaseUnavailable:
+        raise
+    except Exception as exc:
         _raise_chat_db_unavailable("loading a chat by slug", exc)
 
 
 async def list_chats(username: str) -> list[dict]:
     try:
-        db = _get_db()
-        pipeline = [
-            {"$match": {"username": username}},
-            {
-                "$lookup": {
-                    "from": "messages",
-                    "localField": "chat_id",
-                    "foreignField": "chat_id",
-                    "as": "_msgs",
-                }
-            },
-            {"$addFields": {"message_count": {"$size": "$_msgs"}}},
-            {"$project": {"_msgs": 0, "_id": 0}},
-            {"$sort": {"updated_at": -1}},
-        ]
-        return [doc async for doc in db.chats.aggregate(pipeline)]
-    except PyMongoError as exc:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT c.*,
+                       COUNT(m.message_id) AS message_count
+                FROM   scibot_chats    c
+                LEFT JOIN scibot_messages m USING (chat_id)
+                WHERE  c.username = $1
+                GROUP  BY c.chat_id
+                ORDER  BY c.updated_at DESC
+                """,
+                username,
+            )
+        return _rows(rows)
+    except ChatDatabaseUnavailable:
+        raise
+    except Exception as exc:
         _raise_chat_db_unavailable("listing chats", exc)
 
 
 async def update_chat(chat_id: str, username: str, updates: dict) -> dict | None:
     try:
-        db = _get_db()
+        pool = await _get_pool()
         updates["updated_at"] = _now()
-        result = await db.chats.find_one_and_update(
-            {"chat_id": chat_id, "username": username},
-            {"$set": updates},
-            return_document=True,
+
+        # Build SET clause dynamically from the provided keys
+        allowed = {"title", "collection_name", "config_override", "updated_at", "chat_slug"}
+        cols = {k: v for k, v in updates.items() if k in allowed}
+        if not cols:
+            return await get_chat(chat_id, username)
+
+        set_clause = ", ".join(
+            f"{col}=${i}" for i, col in enumerate(cols.keys(), start=1)
         )
-        return _strip_id(result) if result else None
-    except PyMongoError as exc:
+        values = list(cols.values())
+        id_idx = len(values) + 1
+        un_idx = len(values) + 2
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"UPDATE scibot_chats SET {set_clause} "
+                f"WHERE chat_id=${id_idx} AND username=${un_idx} "
+                f"RETURNING *",
+                *values, chat_id, username,
+            )
+        return _row(row)
+    except ChatDatabaseUnavailable:
+        raise
+    except Exception as exc:
         _raise_chat_db_unavailable("updating a chat", exc)
 
 
 async def delete_chat(chat_id: str, username: str) -> bool:
     try:
-        db = _get_db()
-        result = await db.chats.delete_one({"chat_id": chat_id, "username": username})
-        if result.deleted_count:
-            await db.messages.delete_many({"chat_id": chat_id})
-            return True
-        return False
-    except PyMongoError as exc:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            # scibot_messages has ON DELETE CASCADE, so one DELETE suffices
+            result = await conn.execute(
+                "DELETE FROM scibot_chats WHERE chat_id=$1 AND username=$2",
+                chat_id, username,
+            )
+        return result == "DELETE 1"
+    except ChatDatabaseUnavailable:
+        raise
+    except Exception as exc:
         _raise_chat_db_unavailable("deleting a chat", exc)
 
 
 async def clear_messages(chat_id: str) -> bool:
-    """Delete all messages for a chat without deleting the chat itself."""
     try:
-        db = _get_db()
-        await db.messages.delete_many({"chat_id": chat_id})
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM scibot_messages WHERE chat_id=$1", chat_id
+            )
         return True
-    except PyMongoError as exc:
+    except ChatDatabaseUnavailable:
+        raise
+    except Exception as exc:
         _raise_chat_db_unavailable("clearing messages for a chat", exc)
 
 
@@ -235,26 +343,29 @@ async def append_message(
     interrupted: bool = False,
 ) -> str:
     try:
-        db = _get_db()
+        pool = await _get_pool()
         message_id = uuid4().hex
-        doc = {
-            "message_id": message_id,
-            "chat_id": chat_id,
-            "role": role,
-            "content": content,
-            "timestamp": _now(),
-            "task_id": task_id,
-            "source_records": source_records,
-            "interrupted": interrupted,
-            "status": status,
-        }
-        await db.messages.insert_one(doc)
-        await db.chats.update_one(
-            {"chat_id": chat_id},
-            {"$set": {"updated_at": _now()}},
-        )
+        now = _now()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    INSERT INTO scibot_messages
+                        (message_id, chat_id, role, content, timestamp,
+                         task_id, source_records, interrupted, status)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                    """,
+                    message_id, chat_id, role, content, now,
+                    task_id, source_records, interrupted, status,
+                )
+                await conn.execute(
+                    "UPDATE scibot_chats SET updated_at=$1 WHERE chat_id=$2",
+                    now, chat_id,
+                )
         return message_id
-    except PyMongoError as exc:
+    except ChatDatabaseUnavailable:
+        raise
+    except Exception as exc:
         _raise_chat_db_unavailable("saving a chat message", exc)
 
 
@@ -266,19 +377,19 @@ async def update_message_content(
     interrupted: bool = False,
 ) -> None:
     try:
-        db = _get_db()
-        await db.messages.update_one(
-            {"message_id": message_id},
-            {
-                "$set": {
-                    "content": content,
-                    "source_records": source_records,
-                    "status": status,
-                    "interrupted": interrupted,
-                }
-            },
-        )
-    except PyMongoError as exc:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE scibot_messages
+                SET content=$1, source_records=$2, status=$3, interrupted=$4
+                WHERE message_id=$5
+                """,
+                content, source_records, status, interrupted, message_id,
+            )
+    except ChatDatabaseUnavailable:
+        raise
+    except Exception as exc:
         _raise_chat_db_unavailable("updating a chat message", exc)
 
 
@@ -288,13 +399,21 @@ async def get_messages(
     skip: int = 0,
 ) -> list[dict]:
     try:
-        db = _get_db()
-        cursor = (
-            db.messages.find({"chat_id": chat_id}, {"_id": 0})
-            .sort("timestamp", 1)
-            .skip(skip)
-            .limit(limit)
-        )
-        return [doc async for doc in cursor]
-    except PyMongoError as exc:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM scibot_messages
+                WHERE chat_id=$1
+                ORDER BY timestamp ASC
+                LIMIT $2 OFFSET $3
+                """,
+                chat_id, limit, skip,
+            )
+        return _rows(rows)
+    except ChatDatabaseUnavailable:
+        raise
+    except Exception as exc:
         _raise_chat_db_unavailable("loading chat messages", exc)
+
+

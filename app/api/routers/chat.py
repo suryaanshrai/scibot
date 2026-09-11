@@ -5,7 +5,7 @@ import json
 import time
 from typing import AsyncIterator
 
-import redis.asyncio as aioredis
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -31,7 +31,7 @@ from app.api.models import (
     SendMessageRequest,
     UpdateChatRequest,
 )
-from app.config.settings import REDIS_AGENT_URL
+from app.config.settings import POSTGRES_ASYNC_URL
 from app.workers.agent_worker import task_resume_agent, task_run_agent
 
 router = APIRouter()
@@ -132,25 +132,30 @@ async def clear_chat_messages(
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
-    # Clear MongoDB messages
+    # Clear messages
     try:
         await clear_messages(chat_id)
     except ChatDatabaseUnavailable as exc:
         _raise_chat_db_http_error(exc)
 
-    # Wipe LangGraph Redis checkpoint state for this thread
-    thread_key = f"{user.username}:{chat_id}"
-    r = aioredis.from_url(REDIS_AGENT_URL, decode_responses=True)
+    # Wipe LangGraph PostgreSQL checkpoint state for this thread.
+    # The thread_id used by the agent worker equals the chat_id.
     try:
-        cursor = 0
-        while True:
-            cursor, keys = await r.scan(cursor, match=f"*{thread_key}*", count=100)
-            if keys:
-                await r.delete(*keys)
-            if cursor == 0:
-                break
-    finally:
-        await r.aclose()
+        conn = await asyncpg.connect(POSTGRES_ASYNC_URL)
+        try:
+            await conn.execute(
+                "DELETE FROM checkpoints WHERE thread_id=$1", chat_id
+            )
+            await conn.execute(
+                "DELETE FROM checkpoint_blobs WHERE thread_id=$1", chat_id
+            )
+            await conn.execute(
+                "DELETE FROM checkpoint_writes WHERE thread_id=$1", chat_id
+            )
+        finally:
+            await conn.close()
+    except Exception:
+        pass  # Checkpoint tables may not exist yet; non-fatal
 
 
 @router.get("/{chat_id}/messages", response_model=list[MessageOut])
@@ -197,25 +202,36 @@ async def _stream_agent_events(
         except ChatDatabaseUnavailable:
             return
 
-    r = aioredis.from_url(REDIS_AGENT_URL, decode_responses=True)
-    ps = r.pubsub()
-    await ps.subscribe(f"agent_events:{task_id}")
+    # PostgreSQL LISTEN/NOTIFY: worker publishes to channel agent_events_{task_id}
+    channel = f"agent_events_{task_id}"
+    queue: asyncio.Queue[str] = asyncio.Queue()
+
+    def _on_notify(
+        connection: asyncpg.Connection,
+        pid: int,
+        channel_name: str,
+        payload: str,
+    ) -> None:
+        queue.put_nowait(payload)
+
+    conn = await asyncpg.connect(POSTGRES_ASYNC_URL)
+    await conn.add_listener(channel, _on_notify)
 
     full_answer = ""
     source_records = None
-    interrupted = False
     deadline = time.monotonic() + _SSE_TIMEOUT
 
     try:
         while time.monotonic() < deadline:
-            msg = await ps.get_message(ignore_subscribe_messages=True, timeout=1.0)
-            if msg is None:
-                # Keep-alive comment to prevent proxy timeouts
+            remaining = deadline - time.monotonic()
+            try:
+                raw = await asyncio.wait_for(queue.get(), timeout=min(1.0, remaining))
+            except asyncio.TimeoutError:
                 yield ": keepalive\n\n"
                 continue
 
             try:
-                data = json.loads(msg["data"])
+                data = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
                 continue
 
@@ -233,7 +249,6 @@ async def _stream_agent_events(
                 yield f"data: {json.dumps(data)}\n\n"
 
             elif event_type == "interrupt":
-                interrupted = True
                 await _try_update_message(
                     full_answer,
                     source_records,
@@ -263,8 +278,8 @@ async def _stream_agent_events(
             yield f'data: {json.dumps({"type": "error", "detail": "Stream timed out"})}\n\n'
 
     finally:
-        await ps.unsubscribe(f"agent_events:{task_id}")
-        await r.aclose()
+        await conn.remove_listener(channel, _on_notify)
+        await conn.close()
 
 
 @router.post("/{chat_id}/messages")

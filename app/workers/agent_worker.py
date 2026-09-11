@@ -7,21 +7,22 @@ caller (API, CLI, tests) without needing an event loop in the caller.
 
 Broker + result backend
 -----------------------
-Uses the ``redis-agent`` Redis container exclusively (port 6380).  This keeps
-the agent queue completely isolated from the ingestion queue.
+Uses the shared ``redis`` container (port 6379, db 0) as the Celery broker
+and result backend.  Both the ingestion and agent workers share this one
+instance and are isolated by their queue names (-Q ingestion / -Q agent).
 
 LangGraph checkpointing
 -----------------------
 Conversation threads persist across worker restarts using
-``AsyncRedisSaver`` from ``langgraph-checkpoint-redis``.  The saver connects
-to the same ``redis-agent`` Redis instance so that any worker process can
-resume any conversation thread.
+``AsyncPostgresSaver`` from ``langgraph-checkpoint-postgres``.  The saver
+writes to the shared PostgreSQL instance so any worker process can resume
+any conversation thread.
 
 Streaming via pub/sub
 ---------------------
-While a task runs it continuously publishes events to the Redis pub/sub
-channel ``agent_events:{task_id}`` so the API layer can forward them in
-real time to WebSocket / SSE clients without polling the result backend:
+While a task runs it continuously publishes events to the PostgreSQL
+LISTEN/NOTIFY channel ``agent_events_{task_id}`` so the API layer can
+forward them in real time to SSE clients:
 
     {"type": "token",      "content": "<text chunk>"}
     {"type": "tool_start", "tool": "<tool name>"}
@@ -60,7 +61,7 @@ from celery.utils.log import get_task_logger
 from langchain_core.messages import AIMessage
 
 from app.agent.orchestrator import _stringify_content
-from app.config.settings import REDIS_AGENT_URL
+from app.config.settings import POSTGRES_ASYNC_URL, REDIS_URL
 
 logger = get_task_logger(__name__)
 
@@ -108,8 +109,8 @@ def _is_graph_recursion_error(exc: Exception) -> bool:
 
 celery_app = Celery(
     "agent",
-    broker=REDIS_AGENT_URL,
-    backend=REDIS_AGENT_URL,
+    broker=REDIS_URL,
+    backend=REDIS_URL,
 )
 
 celery_app.conf.update(
@@ -149,30 +150,31 @@ async def _run_agent_async(
     active_collection_name: str | None = None,
 ) -> dict:
     """
-    Core async implementation.  Creates a per-task Redis pub/sub publisher,
-    instantiates OrchestratorAgent with a Redis-backed checkpointer, streams
-    the response, and returns the final result dict.
+    Core async implementation.  Creates a per-task PostgreSQL NOTIFY publisher,
+    instantiates OrchestratorAgent with a PostgreSQL-backed checkpointer,
+    streams the response, and returns the final result dict.
 
     This is called from the synchronous Celery task via ``asyncio.run()``.
     """
-    import redis.asyncio as aioredis
-    from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+    import asyncpg
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
     from app.agent.orchestrator import OrchestratorAgent
 
-    channel = f"agent_events:{task_id}"
+    channel = f"agent_events_{task_id}"
 
-    redis_client: aioredis.Redis = aioredis.from_url(
-        REDIS_AGENT_URL, decode_responses=False
-    )
+    pg_notify_conn: asyncpg.Connection = await asyncpg.connect(POSTGRES_ASYNC_URL)
 
     async def publish(event: dict) -> None:
-        await redis_client.publish(channel, json.dumps(event))
+        await pg_notify_conn.execute(
+            "SELECT pg_notify($1, $2)", channel, json.dumps(event)
+        )
 
     agent = None
 
     try:
-        async with AsyncRedisSaver.from_conn_string(REDIS_AGENT_URL) as checkpointer:
+        async with AsyncPostgresSaver.from_conn_string(POSTGRES_ASYNC_URL) as checkpointer:
+            await checkpointer.setup()
             agent = OrchestratorAgent(
                 username=username,
                 password=password,
@@ -243,7 +245,7 @@ async def _run_agent_async(
             pass  # Don't mask the original exception
         raise
     finally:
-        await redis_client.aclose()
+        await pg_notify_conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -365,20 +367,21 @@ def task_resume_agent(
     channel = f"agent_events:{task_id}"
 
     async def _resume() -> dict:
-        import redis.asyncio as aioredis
-        from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+        import asyncpg
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
         from app.agent.orchestrator import OrchestratorAgent
 
-        redis_client: aioredis.Redis = aioredis.from_url(
-            REDIS_AGENT_URL, decode_responses=False
-        )
+        pg_notify_conn: asyncpg.Connection = await asyncpg.connect(POSTGRES_ASYNC_URL)
 
         async def publish(event: dict) -> None:
-            await redis_client.publish(channel, json.dumps(event))
+            await pg_notify_conn.execute(
+                "SELECT pg_notify($1, $2)", channel, json.dumps(event)
+            )
 
         try:
-            async with AsyncRedisSaver.from_conn_string(REDIS_AGENT_URL) as checkpointer:
+            async with AsyncPostgresSaver.from_conn_string(POSTGRES_ASYNC_URL) as checkpointer:
+                await checkpointer.setup()
                 agent = OrchestratorAgent(
                     username=username,
                     password=password,
@@ -424,6 +427,6 @@ def task_resume_agent(
                 await publish({"type": "done", "result": result})
                 return result
         finally:
-            await redis_client.aclose()
+            await pg_notify_conn.close()
 
     return asyncio.run(_resume())

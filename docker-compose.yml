@@ -1,11 +1,42 @@
 services:
 
-  # ── Redis: ingestion queue ────────────────────────────────────────────────
-  redis-ingestion:
+  # ── PostgreSQL: vectors (pgvector), chat history, LangGraph checkpoints,
+  #               and real-time SSE pub/sub (LISTEN/NOTIFY)
+  # The same instance is shared with your other VPS projects — scibot uses the
+  # dedicated 'scibot' database and 'scibot' user for isolation.
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: scibot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: scibot
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scibot -d scibot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Tuned for 8 GB VPS: shared_buffers ~25% of dedicated RAM budget for PG.
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c max_connections=50
+      -c work_mem=16MB
+      -c maintenance_work_mem=64MB
+      -c effective_cache_size=512MB
+    deploy:
+      resources:
+        limits:
+          memory: 1500m
+
+  # ── Redis: Celery broker + task result backend (both workers share one instance)
+  redis:
     image: redis:7-alpine
     restart: unless-stopped
     volumes:
-      - redis-ingestion-data:/data
+      - redis-data:/data
     command: redis-server --appendonly yes --protected-mode no
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -17,61 +48,7 @@ services:
         limits:
           memory: 128m
 
-  # ── Redis: agent queue (Redis Stack — RediSearch required by AsyncRedisSaver)
-  redis-agent:
-    image: redis/redis-stack-server:latest
-    restart: unless-stopped
-    volumes:
-      - redis-agent-data:/data
-    environment:
-      REDIS_ARGS: --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 512m
-
-  # ── Chroma vector store ───────────────────────────────────────────────────
-  chroma:
-    image: chromadb/chroma:latest
-    restart: unless-stopped
-    volumes:
-      - chroma-data:/chroma/chroma
-    environment:
-      IS_PERSISTENT: "TRUE"
-      ANONYMIZED_TELEMETRY: "FALSE"
-    healthcheck:
-      test: ["CMD-SHELL", "bash -lc \"exec 3<>/dev/tcp/localhost/8000 && printf 'GET /api/v2/heartbeat HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '200' <&3\""]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 1g
-
-  # ── MongoDB: chat history ─────────────────────────────────────────────────
-  mongodb:
-    image: mongo:8
-    restart: unless-stopped
-    volumes:
-      - mongodb-data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand('ping').ok"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 512m
-
   # ── Ingestion worker ──────────────────────────────────────────────────────
-  # Concurrency reduced to 2 (from 4) to fit a 2-vCPU VPS without thrashing.
   worker-ingestion:
     build: .
     restart: unless-stopped
@@ -81,47 +58,48 @@ services:
       --without-gossip --without-mingle
     env_file: .env
     environment:
-      REDIS_INGESTION_URL: redis://redis-ingestion:6379/0
-      REDIS_AGENT_URL: redis://redis-agent:6379/0
-      CHROMA_URL: http://chroma:8000
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_CONNECTION_STRING: postgresql+psycopg://scibot:${POSTGRES_PASSWORD}@postgres:5432/scibot
+      POSTGRES_ASYNC_URL: postgresql://scibot:${POSTGRES_PASSWORD}@postgres:5432/scibot
     volumes:
       - ./app/data:/app/app/data
     depends_on:
-      redis-ingestion:
+      redis:
         condition: service_healthy
-      chroma:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          memory: 1500m
-
-  # ── Agent worker ──────────────────────────────────────────────────────────
-  # Concurrency reduced to 1 (from 2) — LLM calls are network-bound; 1 process
-  # avoids redundant model loading overhead on a constrained VPS.
-  worker-agent:
-    build: .
-    restart: unless-stopped
-    command: >
-      celery -A app.workers.agent_worker.celery_app worker
-      -Q agent --pool=prefork -c 1 -l info
-      --without-gossip --without-mingle
-    env_file: .env
-    environment:
-      REDIS_INGESTION_URL: redis://redis-ingestion:6379/0
-      REDIS_AGENT_URL: redis://redis-agent:6379/0
-      CHROMA_URL: http://chroma:8000
-    volumes:
-      - ./app/data:/app/app/data
-    depends_on:
-      redis-agent:
-        condition: service_healthy
-      chroma:
+      postgres:
         condition: service_healthy
     deploy:
       resources:
         limits:
           memory: 1g
+
+  # ── Agent worker ──────────────────────────────────────────────────────────
+  # Higher memory limit — this is the latency-critical path (LLM orchestration).
+  # -c 2 concurrency: LLM calls are network-bound, two slots keep the worker
+  # busy without overwhelming a 2-vCPU machine.
+  worker-agent:
+    build: .
+    restart: unless-stopped
+    command: >
+      celery -A app.workers.agent_worker.celery_app worker
+      -Q agent --pool=prefork -c 2 -l info
+      --without-gossip --without-mingle
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_CONNECTION_STRING: postgresql+psycopg://scibot:${POSTGRES_PASSWORD}@postgres:5432/scibot
+      POSTGRES_ASYNC_URL: postgresql://scibot:${POSTGRES_PASSWORD}@postgres:5432/scibot
+    volumes:
+      - ./app/data:/app/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2g
 
   # ── FastAPI application ───────────────────────────────────────────────────
   # Port is NOT exposed directly — Caddy proxies it via the internal network.
@@ -131,20 +109,15 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8080
     env_file: .env
     environment:
-      REDIS_INGESTION_URL: redis://redis-ingestion:6379/0
-      REDIS_AGENT_URL: redis://redis-agent:6379/0
-      CHROMA_URL: http://chroma:8000
-      MONGODB_CHAT_URL: mongodb://mongodb:27017
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_CONNECTION_STRING: postgresql+psycopg://scibot:${POSTGRES_PASSWORD}@postgres:5432/scibot
+      POSTGRES_ASYNC_URL: postgresql://scibot:${POSTGRES_PASSWORD}@postgres:5432/scibot
     volumes:
       - ./app/data:/app/app/data
     depends_on:
-      redis-ingestion:
+      redis:
         condition: service_healthy
-      redis-agent:
-        condition: service_healthy
-      chroma:
-        condition: service_healthy
-      mongodb:
+      postgres:
         condition: service_healthy
     deploy:
       resources:
@@ -154,7 +127,6 @@ services:
   # ── Caddy: reverse proxy + automatic HTTPS ────────────────────────────────
   # Set DOMAIN in your .env file (e.g. DOMAIN=scibot.example.com).
   # Caddy will obtain and renew a Let's Encrypt certificate automatically.
-  # For a bare IP (no domain), replace Caddyfile content with ":80 { ... }".
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
@@ -174,9 +146,7 @@ services:
           memory: 128m
 
 volumes:
-  chroma-data:
-  redis-ingestion-data:
-  redis-agent-data:
-  mongodb-data:
+  postgres-data:
+  redis-data:
   caddy-data:
   caddy-config:

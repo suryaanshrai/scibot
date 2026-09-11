@@ -50,7 +50,7 @@ from typing import Any
 from celery import Celery
 from celery.utils.log import get_task_logger
 
-from app.config.settings import REDIS_INGESTION_URL
+from app.config.settings import REDIS_URL
 from app.sources.collection import (
     create_collection as col_create,
     update_collection as col_update,
@@ -72,8 +72,8 @@ logger = get_task_logger(__name__)
 
 celery_app = Celery(
     "ingestion",
-    broker=REDIS_INGESTION_URL,
-    backend=REDIS_INGESTION_URL,
+    broker=REDIS_URL,
+    backend=REDIS_URL,
 )
 
 celery_app.conf.update(
