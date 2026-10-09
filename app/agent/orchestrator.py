@@ -928,6 +928,21 @@ def build_graph(
     return builder.compile(checkpointer=_checkpointer, store=_store)
 
 
+def _stage_event(task: Any) -> dict | None:
+    """
+    Map a LangGraph ``tasks`` stream event to a UI stage event.
+
+    Task-start events carry ``input``; task-finish events carry ``result``.
+    Only the Checker is surfaced, since the other stages are already visible
+    through tool and source events.
+    """
+    if not isinstance(task, dict) or task.get("name") != "run_checker":
+        return None
+    if "result" in task or "error" in task:
+        return {"type": "stage", "stage": "checker_done"}
+    return {"type": "stage", "stage": "checker"}
+
+
 # ---------------------------------------------------------------------------
 # AgentResponse
 # ---------------------------------------------------------------------------
@@ -1073,7 +1088,7 @@ class OrchestratorAgent:
         async for chunk in self.graph.astream(
             initial_state,
             config,
-            stream_mode=["messages", "updates"],
+            stream_mode=["messages", "updates", "tasks"],
         ):
             kind = chunk[0] if isinstance(chunk, tuple) else None
             data = chunk[1] if isinstance(chunk, tuple) else chunk
@@ -1089,6 +1104,11 @@ class OrchestratorAgent:
                     content_str = _stringify_content(getattr(msg_chunk, "content", ""))
                     if content_str:
                         yield content_str
+
+            elif kind == "tasks":
+                stage_event = _stage_event(data)
+                if stage_event:
+                    yield stage_event
 
             elif kind == "updates":
                 if "run_tools" in data:
@@ -1140,7 +1160,7 @@ class OrchestratorAgent:
         async for chunk in self.graph.astream(
             Command(resume=response),
             config,
-            stream_mode=["messages", "updates"],
+            stream_mode=["messages", "updates", "tasks"],
         ):
             kind = chunk[0] if isinstance(chunk, tuple) else None
             data = chunk[1] if isinstance(chunk, tuple) else chunk
@@ -1155,6 +1175,11 @@ class OrchestratorAgent:
                     content_str = _stringify_content(getattr(msg_chunk, "content", ""))
                     if content_str:
                         yield content_str
+
+            elif kind == "tasks":
+                stage_event = _stage_event(data)
+                if stage_event:
+                    yield stage_event
 
             elif kind == "updates":
                 if isinstance(data, dict):

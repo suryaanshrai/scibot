@@ -7,7 +7,18 @@ Support for multiple data sources at minimal costs, ingestions and agents run se
 ![](screenshots/Screenshot%202026-03-16%20121702.png)
 [More Screenshots here](screenshots/)
 ## Quick start
-simply do a `docker compose up` in the root of the project and access the frontend at `http://localhost:8080/`. You can also build the image and run the container separately if you want to, or refer the troubleshooting section. 
+From the root of the project:
+
+```bash
+docker compose up
+```
+
+Then open http://localhost:8080. That one command starts Postgres (pgvector), Redis, the ingestion and agent workers, and the API with the frontend. No `.env` is needed: create an account, then add your model provider's API key under **Settings → LLM Model** (or set it for everyone in a `.env`, see [.env.example](.env.example)).
+
+- **Prebuilt or local image.** `docker compose up` pulls `suryaanshrai/scibot` from Docker Hub and builds it from this checkout if the pull fails. Use `docker compose up --build` to always build locally, and `docker compose pull` to update.
+- **Without cloning the repo.** Save [docker-compose.yml](docker-compose.yml) into an empty folder and run `docker compose up` there.
+- **Different port.** `SCIBOT_PORT=9000 docker compose up`.
+- **Production (HTTPS).** Set `DOMAIN` and `POSTGRES_PASSWORD` in `.env`, then run `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d`. This adds Caddy with automatic certificates and memory limits. [scripts/setup-vps.sh](scripts/setup-vps.sh) does all of this on a fresh Ubuntu 24.04 VPS.
 
 ## Key Features and tools
 ### Rich data store and accessibility
@@ -25,7 +36,7 @@ simply do a `docker compose up` in the root of the project and access the fronte
 - **Centralized API and frontend**: keeps the application simple
 - **Background workers for ingestion and agents**: ensures that the API remains responsive and can handle multiple requests without being blocked by long-running tasks.
 - **Orchestrator, Researcher and Checker architecture**: Ensures that high quality, accurate data is fed. Chose this over ReAct because of suitability of this architecture in research scenarios.
-- **Websearch on whitelisted sites**: helps with restricted retrieval of data from reliable sources, with support of multiple engines such as Brave (default), Tavily and Serper.
+- **Websearch on whitelisted sites**: helps with restricted retrieval of data from reliable sources, with support of multiple engines such as DuckDuckGo (default), Tavily and SerpAPI.
 - **Storing all non-analytical data in vector store with rich metadata**: ensures better retrieval and accessibility of data at lower costs, with strategies to optimize data retrieval and keeping LLM usage as little as possible. The rich amount of metadata, paired with 
 - **Multiple tools for empowering the agent**: analysis of data, retreival of data from vector store or db, websearch, arxiv/pubmed search.
 - **MCP support for reuse of data across chats and tools**: ensures better accessibility of tools and resources.
@@ -47,27 +58,35 @@ The production container builds the frontend during the image build and serves t
 The FastAPI API remains available under `/api`, with MCP routes under `/mcp`.
 
 #### TROUBLESHOOT
-In case the docker compose up is not working or taking too long, use the `docker compose -f docker-compose.dependencies.yml up -d` command to start the dependencies (This brings up Redis, Redis Stack, Chroma, and MongoDB without starting the API or the Celery workers).
-
-Then start the API, frontend, and the workers separately, to get started.
+If `docker compose up` is not working or the first build takes too long, start only the dependencies (Postgres with pgvector, and Redis) with their ports published:
 
 ```bash
 docker compose -f docker-compose.dependencies.yml up -d
+```
 
-# In another terminal
+Then copy `.env.example` to `.env` (its Postgres and Redis URLs already point at these containers) and run the API, workers and frontend on the host, each in its own terminal:
+
+```bash
+# API on http://localhost:8080
 uv run python app/main.py
 
-# In another terminal (Windows local development)
-celery -A app.workers.ingestion_worker.celery_app worker -Q ingestion --pool=solo -l info --without-gossip --without-mingle
+# Workers (Windows local development)
+uv run celery -A app.workers.ingestion_worker.celery_app worker -Q ingestion --pool=solo -l info --without-gossip --without-mingle
+uv run celery -A app.workers.agent_worker.celery_app worker -Q agent --pool=solo -l info --without-gossip --without-mingle
 
-# In another terminal (Windows local development)
-celery -A app.workers.agent_worker.celery_app worker -Q agent --pool=solo -l info --without-gossip --without-mingle
+# On Linux or macOS, prefork concurrency is fine instead:
+# uv run celery -A app.workers.ingestion_worker.celery_app worker -Q ingestion --pool=prefork -c 4 -l info --without-gossip --without-mingle
+# uv run celery -A app.workers.agent_worker.celery_app worker -Q agent --pool=prefork -c 2 -l info --without-gossip --without-mingle
 
-# On Linux or inside Docker, prefork concurrency is fine instead:
-# celery -A app.workers.ingestion_worker.celery_app worker -Q ingestion --pool=prefork -c 4 -l info --without-gossip --without-mingle
-# celery -A app.workers.agent_worker.celery_app worker -Q agent --pool=prefork -c 2 -l info --without-gossip --without-mingle
-
-# And finally, the frontend (this too in another terminal)
+# Frontend dev server on http://localhost:5173 (proxies /api to :8080)
 cd app/frontend
 npm i && npm run dev
+```
+
+#### Publishing the image
+[.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml) builds `linux/amd64` and `linux/arm64` images and pushes them to Docker Hub as `suryaanshrai/scibot`. It runs on every push to `master` (tag `latest`) and on `v*` tags (semver tags). Add the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` to enable it. To publish by hand:
+
+```bash
+docker build -t suryaanshrai/scibot:latest .
+docker push suryaanshrai/scibot:latest
 ```

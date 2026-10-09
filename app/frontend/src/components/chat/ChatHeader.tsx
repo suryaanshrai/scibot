@@ -1,142 +1,59 @@
-import { useState } from 'react'
-import { SlidersHorizontal, Pencil, Check, X, Eraser } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Badge } from '@/components/ui/badge'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
-import { useChatStore } from '@/stores/chatStore'
-import { useAuthStore } from '@/stores/authStore'
-import { useConfigStore } from '@/stores/configStore'
-import { ChatSettingsSheet } from './ChatSettingsSheet'
-import { cn } from '@/lib/utils'
-import { updateChatTitle as updateChatTitleRequest, clearChatMessages } from '@/lib/api'
+import { useEffect, useRef, useState } from 'react'
+import { Eraser, PanelRight, SlidersHorizontal } from 'lucide-react'
+import { IconButton, ModelPill } from '@/components/sb/primitives'
 
 interface ChatHeaderProps {
-  chatId: string
+  title: string
+  modelLabel: string
+  railOpen: boolean
+  onToggleRail: () => void
+  onOpenSettings: () => void
+  onClear: () => void | Promise<void>
 }
 
-export function ChatHeader({ chatId }: ChatHeaderProps) {
-  const { chats, updateChatTitle, clearMessages } = useChatStore()
-  const { username, authHeader, globalConfig } = useAuthStore()
-  const { getChatConfig } = useConfigStore()
+export function ChatHeader({ title, modelLabel, railOpen, onToggleRail, onOpenSettings, onClear }: ChatHeaderProps) {
+  const [armed, setArmed] = useState(false)
+  const timer = useRef<number | undefined>(undefined)
 
-  const chat = chats.find((c) => c.chatId === chatId)
-  const chatOverride = getChatConfig(chatId)
-  const activeLLM = chatOverride.llm?.model ?? globalConfig.llm.model
-  const activeProvider = chatOverride.llm?.provider ?? globalConfig.llm.provider
+  useEffect(() => () => window.clearTimeout(timer.current), [])
 
-  const [editing, setEditing] = useState(false)
-  const [editVal, setEditVal] = useState(chat?.title ?? '')
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [clearOpen, setClearOpen] = useState(false)
-
-  const startEdit = () => {
-    setEditVal(chat?.title ?? '')
-    setEditing(true)
-  }
-
-  const confirmEdit = async () => {
-    if (editVal.trim() && username && authHeader) {
-      await updateChatTitleRequest({ username, authHeader }, chatId, editVal.trim())
-      updateChatTitle(chatId, editVal.trim())
+  const clear = () => {
+    if (!armed) {
+      setArmed(true)
+      timer.current = window.setTimeout(() => setArmed(false), 3000)
+      return
     }
-    setEditing(false)
-  }
-
-  const cancelEdit = () => setEditing(false)
-
-  const handleClear = async () => {
-    if (username && authHeader) {
-      await clearChatMessages({ username, authHeader }, chatId)
-      clearMessages(chatId)
-    }
-    setClearOpen(false)
+    window.clearTimeout(timer.current)
+    setArmed(false)
+    void onClear()
   }
 
   return (
-    <>
-      <div className="flex items-center h-14 border-b px-4 gap-3 bg-background">
-        {editing ? (
-          <div className="flex items-center gap-2 flex-1 min-w-0">
-            <Input
-              autoFocus
-              value={editVal}
-              onChange={(e) => setEditVal(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') confirmEdit()
-                if (e.key === 'Escape') cancelEdit()
-              }}
-              className="h-8 text-sm max-w-xs"
-            />
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={confirmEdit}><Check size={14} /></Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={cancelEdit}><X size={14} /></Button>
-          </div>
-        ) : (
-          <button
-            type="button"
-            className={cn('flex-1 min-w-0 text-left group flex items-center gap-1.5')}
-            onDoubleClick={startEdit}
-            title="Double-click to rename"
-          >
-            <span className="font-medium text-sm truncate">{chat?.title ?? 'Chat'}</span>
-            <Pencil size={12} className="opacity-0 group-hover:opacity-50 transition-opacity shrink-0" />
-          </button>
-        )}
-
-        {/* Active model badge */}
-        <Badge variant="secondary" className="text-[11px] shrink-0 hidden sm:flex">
-          {activeProvider}/{activeLLM}
-        </Badge>
-
-        {/* Clear history */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 shrink-0"
-          onClick={() => setClearOpen(true)}
-          title="Clear chat history"
+    <header
+      data-screen-label="Chat"
+      className="flex h-14 flex-none items-center gap-1.5 border-b border-line pr-3 pl-7 max-sm:pl-4"
+    >
+      <span className="min-w-0 flex-1 truncate text-[14.5px] font-semibold">{title}</span>
+      <ModelPill label={modelLabel} onClick={onOpenSettings} className="mr-1.5 max-sm:hidden" />
+      {armed ? (
+        <button
+          type="button"
+          onClick={clear}
+          className="h-[30px] cursor-pointer rounded-lg border-0 bg-warn px-3 text-[12.5px] font-semibold whitespace-nowrap text-[#1B1A17]"
         >
+          Clear history?
+        </button>
+      ) : (
+        <IconButton label="Clear chat history" onClick={clear}>
           <Eraser size={16} />
-        </Button>
-
-        {/* Settings */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 shrink-0"
-          onClick={() => setSettingsOpen(true)}
-          title="Chat settings"
-        >
-          <SlidersHorizontal size={16} />
-        </Button>
-      </div>
-
-      <AlertDialog open={clearOpen} onOpenChange={setClearOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Clear chat history?</AlertDialogTitle>
-            <AlertDialogDescription>
-              All messages in this chat will be permanently deleted and the AI will
-              lose all context from this conversation. This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleClear}>Clear history</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <ChatSettingsSheet chatId={chatId} open={settingsOpen} onOpenChange={setSettingsOpen} />
-    </>
+        </IconButton>
+      )}
+      <IconButton label="Chat settings" onClick={onOpenSettings}>
+        <SlidersHorizontal size={16} />
+      </IconButton>
+      <IconButton label="Sources" onClick={onToggleRail} active={railOpen}>
+        <PanelRight size={16} />
+      </IconButton>
+    </header>
   )
 }

@@ -1,0 +1,87 @@
+# =============================================================================
+# SciBot production override: HTTPS via Caddy, tuned for an 8 GB VPS
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Requires in .env:
+#   DOMAIN=scibot.example.com      # Caddy obtains a Let's Encrypt certificate
+#   POSTGRES_PASSWORD=<strong password>
+# =============================================================================
+
+services:
+
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    # shared_buffers ~25% of the RAM budget given to Postgres.
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c max_connections=50
+      -c work_mem=16MB
+      -c maintenance_work_mem=64MB
+      -c effective_cache_size=512MB
+    deploy:
+      resources:
+        limits:
+          memory: 1500m
+
+  redis:
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+  worker-ingestion:
+    volumes:
+      - ./app/data:/app/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # The latency-critical path (LLM orchestration). Two slots keep it busy
+  # without overwhelming a 2-vCPU machine.
+  worker-agent:
+    volumes:
+      - ./app/data:/app/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  # Not published directly: Caddy proxies it over the internal network.
+  api:
+    ports: !reset []
+    volumes:
+      - ./app/data:/app/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+volumes:
+  caddy-data:
+  caddy-config:

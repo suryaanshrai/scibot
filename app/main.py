@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.chat_db import ChatDatabaseUnavailable, init_chat_db
 from app.api.routers import auth, chat, collections, config
@@ -62,6 +63,22 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+class SPAStaticFiles(StaticFiles):
+    """Serve the built frontend, falling back to index.html for client routes.
+
+    Deep links such as /chat/<id> or /settings have no file on disk; returning
+    index.html lets the React router resolve them after a refresh.
+    """
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404 or "." in path.rsplit("/", 1)[-1]:
+                raise
+            return await super().get_response("index.html", scope)
+
+
 # ── Outer shell app ───────────────────────────────────────────────────────────
 # This is what uvicorn runs. The API lives at /api and the compiled frontend is
 # served at / when the build artifacts are present.
@@ -71,7 +88,7 @@ app.mount("/mcp", mcp_dispatcher)
 
 _FRONTEND_DIST = _ROOT / "app" / "frontend" / "dist"
 if _FRONTEND_DIST.exists():
-    app.mount("/", StaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")
+    app.mount("/", SPAStaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")
 
 
 if __name__ == "__main__":

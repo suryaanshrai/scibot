@@ -23,6 +23,7 @@ interface ChatState {
   appendToken: (chatId: string, msgId: string, token: string) => void
   finalizeMessage: (chatId: string, msgId: string, content: string) => void
   setMessageSources: (chatId: string, msgId: string, sources: Message['sources']) => void
+  patchMessage: (chatId: string, msgId: string, fn: (m: Message) => Message) => void
   addToolCall: (chatId: string, msgId: string, tool: string) => void
   resolveToolCalls: (chatId: string, msgId: string) => void
 
@@ -110,6 +111,14 @@ export const useChatStore = create<ChatState>((set) => ({
         [chatId]: (s.messages[chatId] ?? []).map((m) =>
           m.id === msgId ? { ...m, sources } : m
         ),
+      },
+    })),
+
+  patchMessage: (chatId, msgId, fn) =>
+    set((s) => ({
+      messages: {
+        ...s.messages,
+        [chatId]: (s.messages[chatId] ?? []).map((m) => (m.id === msgId ? fn(m) : m)),
       },
     })),
 

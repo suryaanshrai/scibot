@@ -88,6 +88,10 @@ ok "Repository ready at $REPO_DIR."
 if [[ ! -f "$REPO_DIR/.env" ]]; then
     info "Creating .env from .env.example..."
     cp "$REPO_DIR/.env.example" "$REPO_DIR/.env"
+    # Replace the development Postgres password with a random one.
+    PG_PASSWORD="$(openssl rand -hex 24)"
+    sed -i "s/scibot:scibot@/scibot:${PG_PASSWORD}@/g; s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${PG_PASSWORD}/" "$REPO_DIR/.env"
+    ok "Generated a random POSTGRES_PASSWORD."
     echo ""
     warn "IMPORTANT: Edit $REPO_DIR/.env and fill in:"
     echo "  • DOMAIN=yourdomain.com          (must point to this VPS IP via DNS)"
@@ -114,25 +118,34 @@ if ! grep -q "^DOMAIN=" "$REPO_DIR/.env"; then
     fi
 fi
 
-# ── 7. Build and start services ───────────────────────────────────────────────
-info "Building Docker images and starting services..."
+# ── 7. Pull images and start services ────────────────────────────────────────
+# Production = base compose file + HTTPS/limits override. The SciBot image is
+# pulled from Docker Hub; if that fails it is built on this machine instead.
+info "Pulling images and starting services..."
 cd "$REPO_DIR"
-docker compose pull --ignore-buildable   # pull pre-built infra images
-docker compose up -d --build
+COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.prod.yml)
+if "${COMPOSE[@]}" pull; then
+    "${COMPOSE[@]}" up -d
+else
+    warn "Could not pull the published image — building locally (this takes a while)..."
+    "${COMPOSE[@]}" pull --ignore-buildable
+    "${COMPOSE[@]}" up -d --build
+fi
 
 ok "Services started. Waiting 30 s for health checks..."
 sleep 30
 
 # ── 8. Verify ─────────────────────────────────────────────────────────────────
 info "Service status:"
-docker compose ps
+"${COMPOSE[@]}" ps
 
 echo ""
 ok "=== Setup complete ==="
 echo ""
 echo "  App:     https://$(grep '^DOMAIN=' .env | cut -d= -f2)"
-echo "  Logs:    docker compose logs -f"
-echo "  Status:  docker compose ps"
+echo "  Logs:    docker compose -f docker-compose.yml -f docker-compose.prod.yml logs -f"
+echo "  Status:  docker compose -f docker-compose.yml -f docker-compose.prod.yml ps"
+echo "  Update:  docker compose -f docker-compose.yml -f docker-compose.prod.yml pull && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d"
 echo "  Stop:    docker compose down"
 echo ""
 echo "  To confirm internal ports are NOT reachable from outside:"

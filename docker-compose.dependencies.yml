@@ -1,70 +1,48 @@
-services:
+# =============================================================================
+# SciBot dependencies only: Postgres (pgvector) + Redis, with ports published
+#
+#   docker compose -f docker-compose.dependencies.yml up -d
+#
+# Use this to run the API, workers and frontend on the host (see README):
+#   POSTGRES_CONNECTION_STRING=postgresql+psycopg://scibot:scibot@127.0.0.1:5432/scibot
+#   POSTGRES_ASYNC_URL=postgresql://scibot:scibot@127.0.0.1:5432/scibot
+#   REDIS_URL=redis://127.0.0.1:6379/0
+# =============================================================================
 
-  # ── Redis: ingestion queue ────────────────────────────────────────────────
-  redis-ingestion:
+name: scibot-deps
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: scibot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scibot}
+      POSTGRES_DB: scibot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scibot -d scibot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: redis-server --appendonly yes --protected-mode no
     ports:
       - "6379:6379"
     volumes:
-      - redis-ingestion-data:/data
-    command: redis-server --appendonly yes --protected-mode no
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
-
-  # ── Redis: agent queue (Redis Stack — RediSearch required by AsyncRedisSaver)
-  redis-agent:
-    image: redis/redis-stack-server:latest
-    restart: unless-stopped
-    ports:
-      - "6380:6379"
-    volumes:
-      - redis-agent-data:/data
-    environment:
-      REDIS_ARGS: --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # ── Chroma vector store ───────────────────────────────────────────────────
-  chroma:
-    image: chromadb/chroma:latest
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    volumes:
-      - chroma-data:/chroma/chroma
-    environment:
-      IS_PERSISTENT: "TRUE"
-      ANONYMIZED_TELEMETRY: "FALSE"
-      CHROMA_SERVER_CORS_ALLOW_ORIGINS : "*"
-    healthcheck:
-      test: ["CMD-SHELL", "bash -lc \"exec 3<>/dev/tcp/localhost/8000 && printf 'GET /api/v2/heartbeat HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '200' <&3\""]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-
-  # ── MongoDB: chat history ─────────────────────────────────────────────────
-  mongodb:
-    image: mongo:8
-    restart: unless-stopped
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongodb-data:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand('ping').ok"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
+      retries: 20
 
 volumes:
-  chroma-data:
-  redis-ingestion-data:
-  redis-agent-data:
-  mongodb-data:
+  postgres-data:
+  redis-data:

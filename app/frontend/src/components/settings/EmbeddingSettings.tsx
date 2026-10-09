@@ -1,6 +1,5 @@
-import { Label } from '@/components/ui/label'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Field, SelectInput } from '@/components/sb/primitives'
+import { inputClass } from '@/components/sb/styles'
 import type { EmbeddingConfig, EmbeddingProviderOption } from '@/types/config'
 
 interface EmbeddingSettingsProps {
@@ -14,67 +13,58 @@ export function EmbeddingSettings({ config, options, onChange }: EmbeddingSettin
   const hasListedModel = !!selectedProvider?.models.some((model) => model.id === config.model)
 
   return (
-    <div className="grid gap-3">
-      <div className="space-y-1.5">
-        <Label>Provider</Label>
-        <Select
+    <>
+      <Field label="Provider">
+        <SelectInput
           value={config.provider}
-          onValueChange={(provider) => {
+          onChange={(provider) => {
             const next = options.find((entry) => entry.provider === provider)
             onChange({ provider, model: next?.default_model ?? '', dimensions: undefined })
           }}
-        >
-          <SelectTrigger><SelectValue /></SelectTrigger>
-          <SelectContent>
-            {options.map((provider) => (
-              <SelectItem key={provider.provider} value={provider.provider}>{provider.human_name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+          options={options.map((p) => ({ value: p.provider, label: p.human_name }))}
+        />
+      </Field>
 
-      <div className="space-y-1.5">
-        <Label>Model</Label>
-        {selectedProvider && hasListedModel ? (
-          <Select value={config.model} onValueChange={(model) => onChange({ model })}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {selectedProvider.models.map((model) => (
-                <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      <Field label="Model">
+        {selectedProvider && (hasListedModel || !config.model) && selectedProvider.models.length > 0 ? (
+          <SelectInput
+            value={config.model}
+            onChange={(model) => onChange({ model })}
+            options={selectedProvider.models.map((m) => ({ value: m.id, label: m.name }))}
+          />
         ) : (
-          <Input
+          <input
             value={config.model}
             onChange={(e) => onChange({ model: e.target.value })}
             placeholder={selectedProvider?.default_model || 'Embedding model id'}
+            className={inputClass}
           />
         )}
-      </div>
+      </Field>
 
-      <div className="space-y-1.5">
-        <Label>API Key</Label>
-        <Input
+      <Field label="API key">
+        <input
           type="password"
           value={config.api_key ?? ''}
           onChange={(e) => onChange({ api_key: e.target.value || undefined })}
           placeholder="Leave blank to use env variable"
+          autoComplete="off"
+          className={inputClass}
         />
-      </div>
+      </Field>
 
       {selectedProvider?.supports_dimensions && (
-        <div className="space-y-1.5">
-          <Label>Dimensions <span className="text-muted-foreground">(optional)</span></Label>
-          <Input
+        <Field label="Dimensions" optional>
+          <input
             type="number"
+            min={1}
             value={config.dimensions ?? ''}
             onChange={(e) => onChange({ dimensions: e.target.value ? Number(e.target.value) : undefined })}
             placeholder="Model default"
-            min={1}
+            className={inputClass}
           />
-        </div>
+        </Field>
       )}
-    </div>
+    </>
   )
 }

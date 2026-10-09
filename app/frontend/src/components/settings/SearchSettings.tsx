@@ -1,8 +1,6 @@
-import { Label } from '@/components/ui/label'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { cn } from '@/lib/utils'
+import { useState } from 'react'
+import { Field, SelectInput } from '@/components/sb/primitives'
+import { inputClass, textareaClass } from '@/components/sb/styles'
 import type { ExternalKeys, SearchConfig } from '@/types/config'
 import { SEARCH_TOOLS } from '@/types/config'
 
@@ -13,64 +11,65 @@ interface SearchSettingsProps {
   onKeysChange: (updates: Partial<ExternalKeys>) => void
 }
 
+const parseList = (text: string) =>
+  text
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+
 export function SearchSettings({ config, onChange, keys, onKeysChange }: SearchSettingsProps) {
+  // Raw text is kept locally so blank lines survive while typing.
+  const [whitelist, setWhitelist] = useState(() => (config.whitelist_extra ?? []).join('\n'))
+
   const keyHint =
     config.tool === 'tavily'
       ? 'Tavily requires a TAVILY_API_KEY in API Keys.'
       : config.tool === 'serp'
-      ? 'SerpAPI requires a SERPAPI_API_KEY in API Keys.'
-      : 'DuckDuckGo works without an API key.'
+        ? 'SerpAPI requires a SERPAPI_API_KEY in API Keys.'
+        : 'DuckDuckGo works without an API key.'
 
   const activeKeyField =
     config.tool === 'tavily'
-      ? { key: 'TAVILY_API_KEY' as const, label: 'Tavily API Key' }
+      ? { key: 'TAVILY_API_KEY' as const, label: 'Tavily API key' }
       : config.tool === 'serp'
-      ? { key: 'SERPAPI_API_KEY' as const, label: 'SerpAPI Key' }
-      : null
+        ? { key: 'SERPAPI_API_KEY' as const, label: 'SerpAPI key' }
+        : null
 
   return (
-    <div className="grid gap-3">
-      <div className="space-y-1.5">
-        <Label>Search tool</Label>
-        <Select value={config.tool} onValueChange={(v) => onChange({ tool: v as SearchConfig['tool'] })}>
-          <SelectTrigger><SelectValue /></SelectTrigger>
-          <SelectContent>
-            {SEARCH_TOOLS.map((t) => (
-              <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <p className={cn(
-          'text-xs',
-          config.tool === 'duckduckgo' ? 'text-muted-foreground' : 'text-foreground'
-        )}>
-          {keyHint}
-        </p>
-      </div>
+    <>
+      <Field label="Search tool" hint={<span className="text-ink2">{keyHint}</span>}>
+        <SelectInput
+          value={config.tool}
+          onChange={(tool) => onChange({ tool: tool as SearchConfig['tool'] })}
+          options={SEARCH_TOOLS}
+        />
+      </Field>
 
       {activeKeyField && (
-        <div className="space-y-1.5">
-          <Label>{activeKeyField.label}</Label>
-          <Input
+        <Field label={activeKeyField.label}>
+          <input
             type="password"
             value={keys[activeKeyField.key] ?? ''}
             onChange={(e) => onKeysChange({ [activeKeyField.key]: e.target.value || undefined })}
-            placeholder={`Enter ${activeKeyField.label}`}
+            placeholder={activeKeyField.key}
+            autoComplete="off"
+            className={`${inputClass} font-mono text-[13px]`}
           />
-        </div>
+        </Field>
       )}
 
-      <div className="space-y-1.5">
-        <Label>Extra domain whitelist <span className="text-muted-foreground">(newline-separated)</span></Label>
-        <Textarea
-          value={(config.whitelist_extra ?? []).join('\n')}
-          onChange={(e) =>
-            onChange({ whitelist_extra: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean) })
-          }
-          placeholder="example.com&#10;another-site.org"
-          rows={3}
+      <Field label={<>Extra domain whitelist <span className="font-normal text-ink3">(newline-separated)</span></>}>
+        <textarea
+          rows={4}
+          value={whitelist}
+          onChange={(e) => {
+            setWhitelist(e.target.value)
+            onChange({ whitelist_extra: parseList(e.target.value) })
+          }}
+          placeholder="example.com"
+          className={textareaClass}
         />
-      </div>
-    </div>
+      </Field>
+    </>
   )
 }

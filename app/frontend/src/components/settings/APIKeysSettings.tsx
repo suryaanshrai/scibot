@@ -1,5 +1,5 @@
-import { Label } from '@/components/ui/label'
-import { Input } from '@/components/ui/input'
+import { Field } from '@/components/sb/primitives'
+import { inputClass } from '@/components/sb/styles'
 import type { ExternalKeys } from '@/types/config'
 
 interface APIKeysSettingsProps {
@@ -7,28 +7,30 @@ interface APIKeysSettingsProps {
   onChange: (updates: Partial<ExternalKeys>) => void
 }
 
-const KEY_FIELDS: { key: keyof ExternalKeys; label: string; placeholder?: string }[] = [
-  { key: 'SEMANTIC_SCHOLAR_API_KEY', label: 'Semantic Scholar API Key', placeholder: 'Optional — increases rate limit' },
-  { key: 'NCBI_API_KEY', label: 'NCBI / PubMed API Key', placeholder: 'Optional — increases rate limit' },
-  { key: 'TAVILY_API_KEY', label: 'Tavily API Key', placeholder: 'Required when Tavily is selected' },
-  { key: 'SERPAPI_API_KEY', label: 'SerpAPI Key', placeholder: 'Required when SerpAPI is selected' },
-  { key: 'GITHUB_TOKEN', label: 'GitHub Token', placeholder: 'ghp_...' },
+const KEY_FIELDS: { key: keyof ExternalKeys; label: string; hint?: string }[] = [
+  { key: 'TAVILY_API_KEY', label: 'Tavily API key', hint: 'Required when Tavily is the search tool.' },
+  { key: 'SERPAPI_API_KEY', label: 'SerpAPI key', hint: 'Required when SerpAPI is the search tool.' },
+  { key: 'SEMANTIC_SCHOLAR_API_KEY', label: 'Semantic Scholar API key', hint: 'Optional. Raises the rate limit for reference fetching.' },
+  { key: 'NCBI_API_KEY', label: 'NCBI / PubMed API key', hint: 'Optional. Raises the PubMed rate limit.' },
+  { key: 'GITHUB_TOKEN', label: 'GitHub token', hint: 'Optional. Needed for private repositories.' },
 ]
 
 export function APIKeysSettings({ keys, onChange }: APIKeysSettingsProps) {
   return (
-    <div className="grid gap-3">
-      {KEY_FIELDS.map(({ key, label, placeholder }) => (
-        <div key={key} className="space-y-1.5">
-          <Label>{label}</Label>
-          <Input
+    <>
+      {KEY_FIELDS.map(({ key, label, hint }) => (
+        <Field key={key} label={label} hint={hint}>
+          <input
             type="password"
             value={keys[key] ?? ''}
             onChange={(e) => onChange({ [key]: e.target.value || undefined })}
-            placeholder={placeholder}
+            placeholder={key}
+            autoComplete="off"
+            className={`${inputClass} font-mono text-[13px]`}
           />
-        </div>
+        </Field>
       ))}
-    </div>
+      <p className="m-0 text-[12px] leading-normal text-ink3">Keys are encrypted per user and used only by the tools that need them.</p>
+    </>
   )
 }

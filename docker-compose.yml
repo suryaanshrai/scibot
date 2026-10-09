@@ -1,152 +1,114 @@
+# =============================================================================
+# SciBot: one command to run everything
+#
+#   docker compose up            # pulls suryaanshrai/scibot, builds locally if the pull fails
+#   docker compose up --build    # always build the image from this checkout
+#   docker compose pull          # update to the latest published image
+#
+# Then open http://localhost:8080
+#
+# No .env file is required. Provider API keys can be set per user in
+# Settings → LLM / API Keys, or globally in a .env file next to this one
+# (see .env.example). This file also works on its own, outside the repo:
+# put it in an empty folder and run `docker compose up`.
+#
+# For a VPS with HTTPS, layer the production override on top:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# =============================================================================
+
+name: scibot
+
+x-scibot-env: &scibot-env
+  REDIS_URL: redis://redis:6379/0
+  POSTGRES_CONNECTION_STRING: postgresql+psycopg://scibot:${POSTGRES_PASSWORD:-scibot}@postgres:5432/scibot
+  POSTGRES_ASYNC_URL: postgresql://scibot:${POSTGRES_PASSWORD:-scibot}@postgres:5432/scibot
+  DEFAULT_STORE_PROVIDER: ${DEFAULT_STORE_PROVIDER:-postgres}
+  PYTHONUNBUFFERED: "1"
+
+x-scibot-app: &scibot-app
+  # The API and both workers run the same image. Only `api` declares `build`;
+  # Compose builds it once and the workers reuse the result.
+  image: ${SCIBOT_IMAGE:-suryaanshrai/scibot:latest}
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  environment: *scibot-env
+  extra_hosts:
+    - "host.docker.internal:host-gateway"   # reach Ollama etc. running on the host
+  volumes:
+    - scibot-data:/app/app/data      # SQLite users DB, uploads, collection metadata
+    - scibot-cache:/root/.cache      # downloaded OCR / speech / embedding models
+  depends_on:
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+
 services:
 
   # ── PostgreSQL: vectors (pgvector), chat history, LangGraph checkpoints,
   #               and real-time SSE pub/sub (LISTEN/NOTIFY)
-  # The same instance is shared with your other VPS projects — scibot uses the
-  # dedicated 'scibot' database and 'scibot' user for isolation.
   postgres:
     image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
       POSTGRES_USER: scibot
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scibot}
       POSTGRES_DB: scibot
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U scibot -d scibot"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 10
-    # Tuned for 8 GB VPS: shared_buffers ~25% of dedicated RAM budget for PG.
-    command: >
-      postgres
-      -c shared_buffers=256MB
-      -c max_connections=50
-      -c work_mem=16MB
-      -c maintenance_work_mem=64MB
-      -c effective_cache_size=512MB
-    deploy:
-      resources:
-        limits:
-          memory: 1500m
+      retries: 20
 
-  # ── Redis: Celery broker + task result backend (both workers share one instance)
+  # ── Redis: Celery broker + task result backend
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    command: redis-server --appendonly yes --protected-mode no
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes --protected-mode no
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 128m
+      retries: 20
 
-  # ── Ingestion worker ──────────────────────────────────────────────────────
+  # ── Ingestion worker: OCR, transcription, chunking and embedding
   worker-ingestion:
-    build: .
-    restart: unless-stopped
+    <<: *scibot-app
     command: >
       celery -A app.workers.ingestion_worker.celery_app worker
       -Q ingestion --pool=prefork -c 2 -l info
       --without-gossip --without-mingle
-    env_file: .env
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      POSTGRES_CONNECTION_STRING: postgresql+psycopg://scibot:${POSTGRES_PASSWORD}@postgres:5432/scibot
-      POSTGRES_ASYNC_URL: postgresql://scibot:${POSTGRES_PASSWORD}@postgres:5432/scibot
-    volumes:
-      - ./app/data:/app/app/data
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          memory: 1g
 
-  # ── Agent worker ──────────────────────────────────────────────────────────
-  # Higher memory limit — this is the latency-critical path (LLM orchestration).
-  # -c 2 concurrency: LLM calls are network-bound, two slots keep the worker
-  # busy without overwhelming a 2-vCPU machine.
+  # ── Agent worker: Orchestrator → Researcher → Checker runs
   worker-agent:
-    build: .
-    restart: unless-stopped
+    <<: *scibot-app
     command: >
       celery -A app.workers.agent_worker.celery_app worker
       -Q agent --pool=prefork -c 2 -l info
       --without-gossip --without-mingle
-    env_file: .env
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      POSTGRES_CONNECTION_STRING: postgresql+psycopg://scibot:${POSTGRES_PASSWORD}@postgres:5432/scibot
-      POSTGRES_ASYNC_URL: postgresql://scibot:${POSTGRES_PASSWORD}@postgres:5432/scibot
-    volumes:
-      - ./app/data:/app/app/data
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          memory: 2g
 
-  # ── FastAPI application ───────────────────────────────────────────────────
-  # Port is NOT exposed directly — Caddy proxies it via the internal network.
+  # ── API + frontend on http://localhost:8080
   api:
+    <<: *scibot-app
     build: .
-    restart: unless-stopped
     command: uvicorn app.main:app --host 0.0.0.0 --port 8080
-    env_file: .env
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      POSTGRES_CONNECTION_STRING: postgresql+psycopg://scibot:${POSTGRES_PASSWORD}@postgres:5432/scibot
-      POSTGRES_ASYNC_URL: postgresql://scibot:${POSTGRES_PASSWORD}@postgres:5432/scibot
-    volumes:
-      - ./app/data:/app/app/data
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          memory: 512m
-
-  # ── Caddy: reverse proxy + automatic HTTPS ────────────────────────────────
-  # Set DOMAIN in your .env file (e.g. DOMAIN=scibot.example.com).
-  # Caddy will obtain and renew a Let's Encrypt certificate automatically.
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"   # HTTP/3
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      - api
-    deploy:
-      resources:
-        limits:
-          memory: 128m
+      - "${SCIBOT_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
 volumes:
   postgres-data:
   redis-data:
-  caddy-data:
-  caddy-config:
+  scibot-data:
+  scibot-cache:

@@ -503,7 +503,9 @@ export async function getChatHistory(auth: AuthSession, chatId: string): Promise
 }
 
 export async function saveGlobalConfig(auth: AuthSession, config: UserConfig): Promise<UserConfig> {
-  const { data_source_creds: _ignored, ...globalOnlyConfig } = config
+  // Data-source credentials are per chat; never persist them globally.
+  const globalOnlyConfig: Partial<UserConfig> = { ...config }
+  delete globalOnlyConfig.data_source_creds
   const updated = await apiRequest<Partial<UserConfig>>('/config', {
     method: 'PUT',
     body: JSON.stringify(globalOnlyConfig),
@@ -546,6 +548,19 @@ export async function clearChatMessages(auth: AuthSession, chatId: string): Prom
   await apiRequest(`/chats/${encodeURIComponent(chatId)}/clear`, { method: 'POST' }, auth)
 }
 
+export interface StreamHandlers {
+  onToken: (token: string) => void
+  onToolStart: (tool: string) => void
+  onSources: (sources: SourceRecord[]) => void
+  /** Retrieval summary emitted after each extraction step (no records attached). */
+  onSourceCount?: (count: number, filtered: number) => void
+  /** Graph stage transitions, e.g. the Checker starting or finishing. */
+  onStage?: (stage: 'checker' | 'checker_done') => void
+  onInterrupt: (payload: HITLPayload, content: string, sources?: SourceRecord[]) => void
+  onDone: (content: string, sources?: SourceRecord[]) => void
+  onError: (err: Error) => void
+}
+
 function parseSseChunk(buffer: string): { rest: string; events: string[] } {
   const parts = buffer.split('\n\n')
   const rest = parts.pop() ?? ''
@@ -572,14 +587,7 @@ export function sendMessage(
   chatId: string,
   query: string,
   configOverride: Partial<UserConfig> | undefined,
-  handlers: {
-    onToken: (token: string) => void
-    onToolStart: (tool: string) => void
-    onSources: (sources: SourceRecord[]) => void
-    onInterrupt: (payload: HITLPayload, content: string, sources?: SourceRecord[]) => void
-    onDone: (content: string, sources?: SourceRecord[]) => void
-    onError: (err: Error) => void
-  }
+  handlers: StreamHandlers
 ): () => void {
   return streamChatEndpoint(
     `${API_BASE}/chats/${encodeURIComponent(chatId)}/messages`,
@@ -593,14 +601,7 @@ export function resumeChat(
   auth: AuthSession,
   chatId: string,
   response: unknown,
-  handlers: {
-    onToken: (token: string) => void
-    onToolStart: (tool: string) => void
-    onSources: (sources: SourceRecord[]) => void
-    onInterrupt: (payload: HITLPayload, content: string, sources?: SourceRecord[]) => void
-    onDone: (content: string, sources?: SourceRecord[]) => void
-    onError: (err: Error) => void
-  }
+  handlers: StreamHandlers
 ): () => void {
   return streamChatEndpoint(
     `${API_BASE}/chats/${encodeURIComponent(chatId)}/resume`,
@@ -614,14 +615,7 @@ function streamChatEndpoint(
   url: string,
   auth: AuthSession,
   body: unknown,
-  handlers: {
-    onToken: (token: string) => void
-    onToolStart: (tool: string) => void
-    onSources: (sources: SourceRecord[]) => void
-    onInterrupt: (payload: HITLPayload, content: string, sources?: SourceRecord[]) => void
-    onDone: (content: string, sources?: SourceRecord[]) => void
-    onError: (err: Error) => void
-  }
+  handlers: StreamHandlers
 ): () => void {
   const controller = new AbortController()
 
@@ -667,6 +661,9 @@ function streamChatEndpoint(
         } else if (event.type === 'sources') {
           finalSources = event.records ?? finalSources
           if (event.records) handlers.onSources(event.records)
+          if (typeof event.count === 'number') handlers.onSourceCount?.(event.count, event.filtered ?? 0)
+        } else if (event.type === 'stage') {
+          handlers.onStage?.(event.stage)
         } else if (event.type === 'interrupt') {
           handlers.onInterrupt(event.payload, finalContent, finalSources)
           return
