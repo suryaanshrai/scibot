@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Check } from 'lucide-react'
+import { Metal } from '@/components/fx/Metal'
 import { RefChip, Wordmark } from '@/components/sb/primitives'
 import { useThemeStore } from '@/stores/themeStore'
 
@@ -223,14 +224,16 @@ export function LandingPage() {
             databases, and get answers grounded in them.
           </p>
           <div className="flex flex-wrap gap-2.5" style={rise(0.38)}>
-            <button
-              type="button"
-              onClick={copy}
-              className="flex h-12 flex-none cursor-pointer items-center gap-3.5 rounded-xl border border-line2 bg-surface py-0 pr-2 pl-[18px] font-mono text-[14px] font-medium whitespace-nowrap text-ink"
-            >
-              {COMMAND}
-              <span className="flex h-8 items-center rounded-lg bg-acc px-3 font-ui text-[12.5px] font-semibold text-accink">{copyLabel}</span>
-            </button>
+            <Metal variant="button" borderRadius={12} className="flex-none">
+              <button
+                type="button"
+                onClick={copy}
+                className="flex h-12 flex-none cursor-pointer items-center gap-3.5 rounded-xl border border-line2 bg-surface py-0 pr-2 pl-[18px] font-mono text-[14px] font-medium whitespace-nowrap text-ink"
+              >
+                {COMMAND}
+                <span className="flex h-8 items-center rounded-lg bg-acc px-3 font-ui text-[12.5px] font-semibold text-accink">{copyLabel}</span>
+              </button>
+            </Metal>
             <a href="#start" className="flex h-12 flex-none items-center rounded-xl px-5 text-[14.5px] font-semibold whitespace-nowrap text-ink underline underline-offset-4 decoration-line2 hover:text-acc">
               Read the quick start
             </a>

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ModelPill, Spinner } from '@/components/sb/primitives'
+import { Beam } from '@/components/fx/Beam'
 import { SourceStager } from '@/components/sources/SourceStager'
 import { createChat as createChatRequest } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
@@ -53,29 +54,31 @@ export function NewChatPage() {
             Optionally add sources to ground the conversation, then start chatting.
           </p>
 
-          <div className="rounded-2xl border border-line2 bg-surface shadow-sb">
-            <SourceStager sources={pendingSources} onChange={setPendingSources} />
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-4 py-3.5">
-              <button
-                type="button"
-                onClick={() => void start(false)}
-                disabled={starting}
-                className="cursor-pointer border-0 bg-transparent p-0 text-[13px] font-medium text-ink2 underline decoration-line2 underline-offset-4 hover:text-ink disabled:cursor-wait"
-              >
-                Skip sources and start chatting
-              </button>
-              <button
-                type="button"
-                onClick={() => void start(true)}
-                disabled={starting}
-                className="flex h-10 cursor-pointer items-center gap-2 rounded-[10px] border-0 bg-acc px-[18px] text-[13.5px] font-semibold text-accink transition-[filter] hover:brightness-110"
-                style={{ opacity: starting ? 0.7 : 1 }}
-              >
-                {starting && <Spinner className="text-accink" />}
-                {starting ? 'Starting chat…' : 'Start chat'}
-              </button>
+          <Beam size="line" active={starting} className="rounded-2xl shadow-sb">
+            <div className="rounded-2xl border border-line2 bg-surface">
+              <SourceStager sources={pendingSources} onChange={setPendingSources} />
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-4 py-3.5">
+                <button
+                  type="button"
+                  onClick={() => void start(false)}
+                  disabled={starting}
+                  className="cursor-pointer border-0 bg-transparent p-0 text-[13px] font-medium text-ink2 underline decoration-line2 underline-offset-4 hover:text-ink disabled:cursor-wait"
+                >
+                  Skip sources and start chatting
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void start(true)}
+                  disabled={starting}
+                  className="flex h-10 cursor-pointer items-center gap-2 rounded-[10px] border-0 bg-acc px-[18px] text-[13.5px] font-semibold text-accink transition-[filter] hover:brightness-110"
+                  style={{ opacity: starting ? 0.7 : 1 }}
+                >
+                  {starting && <Spinner className="text-accink" />}
+                  {starting ? 'Starting chat…' : 'Start chat'}
+                </button>
+              </div>
             </div>
-          </div>
+          </Beam>
 
           {starting && pendingSources.length > 0 && (
             <p className="mt-[18px] mb-0 text-[13px] text-ink2">Preparing sources and creating the chat. Large ingests can take a minute.</p>

@@ -1,5 +1,8 @@
+import { useLayoutEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
+import { Liquid } from 'liquid-gooey'
 import { ChevronDown, LoaderCircle } from 'lucide-react'
+import { useFxPalette } from '@/lib/fxPalette'
 import { cn } from '@/lib/utils'
 import { inputClass } from './styles'
 
@@ -59,8 +62,43 @@ export function Segmented<T extends string | number>({
   size?: 'sm' | 'md'
   className?: string
 }) {
+  const theme = useFxPalette((p) => p.theme)
+  const pillRef = useRef<HTMLDivElement>(null)
+
+  // The selected pill is one liquid blob: move it under the active option and
+  // the liquid follows on a spring, trailing a droplet as it slides.
+  useLayoutEffect(() => {
+    const pill = pillRef.current
+    const track = pill?.offsetParent
+    if (!pill || !track) return
+    const place = () => {
+      const on = track.querySelector<HTMLElement>('button[aria-pressed="true"]')
+      pill.style.visibility = on ? 'visible' : 'hidden'
+      if (!on) return
+      pill.style.width = `${on.offsetWidth}px`
+      pill.style.transform = `translateX(${on.offsetLeft}px)`
+    }
+    place()
+    const observer = new ResizeObserver(place)
+    observer.observe(track)
+    return () => observer.disconnect()
+  }, [value, options.length])
+
   return (
-    <div className={cn('flex w-max gap-0.5 rounded-[10px] bg-bg1 p-[3px]', size === 'sm' && 'rounded-[9px]', className)}>
+    <Liquid
+      blur={3}
+      contrast={20}
+      fill="var(--surface)"
+      shadow={theme === 'dark' ? '0 1px 2px rgb(0 0 0 / .45)' : '0 1px 2px rgb(0 0 0 / .08)'}
+      className={cn('flex w-max gap-0.5 rounded-[10px] bg-bg1 p-[3px]', size === 'sm' && 'rounded-[9px]', className)}
+    >
+      <Liquid.Item effect="move">
+        <div
+          ref={pillRef}
+          aria-hidden
+          className={cn('pointer-events-none absolute top-[3px] left-0', size === 'sm' ? 'h-6 rounded-[7px]' : 'h-7 rounded-lg')}
+        />
+      </Liquid.Item>
       {options.map((option) => {
         const on = option.value === value
         return (
@@ -74,7 +112,8 @@ export function Segmented<T extends string | number>({
               size === 'sm'
                 ? 'h-6 min-w-[34px] justify-center rounded-[7px] px-2 font-mono text-[12px] font-semibold'
                 : 'h-7 rounded-lg px-3 text-[12.5px]',
-              on ? 'bg-surface text-ink shadow-[0_1px_2px_rgb(0_0_0/.08)]' : 'bg-transparent text-ink2 hover:text-ink'
+              'relative bg-transparent',
+              on ? 'text-ink' : 'text-ink2 hover:text-ink'
             )}
           >
             {option.icon}
@@ -82,7 +121,7 @@ export function Segmented<T extends string | number>({
           </button>
         )
       })}
-    </div>
+    </Liquid>
   )
 }
 

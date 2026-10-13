@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { LibraryBig, Plus, X } from 'lucide-react'
+import { AgentOrb } from '@/components/fx/AgentOrb'
 import { Spinner, UnderlineTabs } from '@/components/sb/primitives'
 import { primaryButtonClass } from '@/components/sb/styles'
 import { SourceStager } from '@/components/sources/SourceStager'
@@ -163,13 +164,13 @@ export function SourcesRail({
             <>
               {ingesting && (
                 <div className="mx-2.5 mt-2 mb-1 flex items-center gap-2.5 rounded-[10px] border border-line bg-surface px-3 py-2.5 text-[12.5px] text-ink2">
-                  <Spinner />
+                  <AgentOrb state="weaving" />
                   Ingesting sources…
                 </div>
               )}
               {collectionLoading && !ingesting && (
                 <div className="mx-2.5 mt-2 flex items-center gap-2.5 text-[12.5px] text-ink3">
-                  <Spinner /> Loading collection…
+                  <AgentOrb tone="muted" /> Loading collection…
                 </div>
               )}
               {collectionError && <p className="mx-2.5 my-3 text-[12.5px] text-warn">{collectionError}</p>}

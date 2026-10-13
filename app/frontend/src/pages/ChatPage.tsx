@@ -310,6 +310,7 @@ export function ChatPage() {
               setAddOpen(true)
             }}
             disabled={running || waiting || !auth}
+            working={running}
             tight={tight}
           />
         </div>

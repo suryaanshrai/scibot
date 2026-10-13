@@ -10,14 +10,19 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "border-beam": "^1.4.1",
+    "bot-avatars": "^0.2.2",
     "clsx": "^2.1.1",
+    "liquid-gooey": "^0.2.2",
     "lucide-react": "^0.577.0",
+    "metal-fx": "^2.0.11",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.13.1",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.5.0",
+    "thinking-orbs": "^0.3.2",
     "zustand": "^5.0.11"
   },
   "devDependencies": {

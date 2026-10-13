@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { AgentAvatar } from '@/components/fx/AgentAvatar'
 import { AssistantMessage } from './AssistantMessage'
 import type { Message } from '@/types/chat'
 
@@ -32,6 +33,7 @@ export function MessageList({ messages, emptyHint, hoverRef, onHoverRef, onCite,
       <div className="mx-auto max-w-[900px]" style={{ padding: tight ? '32px 20px 20px' : '52px 44px 24px' }}>
         {messages.length === 0 && (
           <div className="flex min-h-[52vh] flex-col items-start justify-end gap-2.5 pb-6">
+            <AgentAvatar size={64} className="mb-3" />
             <p className="m-0 font-serif text-[40px] leading-[1.05] tracking-[-0.025em] text-ink">
               Send a message <em>to begin</em>
             </p>

@@ -4,7 +4,11 @@ import ReactMarkdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Check, ChevronDown, CircleAlert, ShieldCheck, TriangleAlert } from 'lucide-react'
-import { RefChip, Spinner } from '@/components/sb/primitives'
+import { AgentAvatar } from '@/components/fx/AgentAvatar'
+import { AgentOrb } from '@/components/fx/AgentOrb'
+import { Beam } from '@/components/fx/Beam'
+import { agentOrbState, runOrbState } from '@/components/fx/orbState'
+import { RefChip } from '@/components/sb/primitives'
 import { hitlDetails, remarkCitations, splitCheckerNote } from '@/lib/answer'
 import { cn } from '@/lib/utils'
 import type { Message } from '@/types/chat'
@@ -19,6 +23,17 @@ interface AssistantMessageProps {
   onApprove: () => void
   onDeny: () => void
   tight: boolean
+}
+
+function runStatusOf(message: Message) {
+  return message.runStatus ?? (message.status === 'failed' ? 'failed' : message.interrupted ? 'paused' : 'done')
+}
+
+function avatarState(message: Message) {
+  const status = runStatusOf(message)
+  if (status === 'running' || status === 'writing') return 'working'
+  if (status === 'failed' || status === 'paused') return 'sleeping'
+  return 'default'
 }
 
 function useElapsed(startedAt: number | undefined, live: boolean) {
@@ -93,7 +108,7 @@ function StatusBar({
   const elapsed = useElapsed(message.startedAt, live)
   const hasTrace = Boolean(message.trace?.length)
 
-  const status = message.runStatus ?? (message.status === 'failed' ? 'failed' : message.interrupted ? 'paused' : 'done')
+  const status = runStatusOf(message)
   const lastStep = message.trace?.[message.trace.length - 1]
   const statusText =
     status === 'waiting'
@@ -120,8 +135,7 @@ function StatusBar({
         hasTrace ? 'cursor-pointer hover:bg-bg1' : 'cursor-default'
       )}
     >
-      {(status === 'running' || status === 'writing') && <Spinner />}
-      {status === 'waiting' && <span className="sb-pulse mx-[3px] h-2 w-2 flex-none rounded-full bg-warn" />}
+      {live && <AgentOrb state={runOrbState(message)} tone={status === 'waiting' ? 'warn' : 'ink'} />}
       {status === 'done' && <Check size={14} className="flex-none text-ok" />}
       {(status === 'failed' || status === 'paused') && <CircleAlert size={14} className="flex-none text-warn" />}
       <span className="truncate text-ink">{statusText}</span>
@@ -166,7 +180,7 @@ function Trace({ message }: { message: Message }) {
           <span className="text-[11.5px] font-semibold text-ink3 max-sm:hidden">{step.agent}</span>
           <span className="truncate text-ink">{step.label}</span>
           <span className="text-ink3 tabular-nums">{step.detail}</span>
-          {step.running ? <Spinner size={13} /> : <Check size={13} className="text-ok" />}
+          {step.running ? <AgentOrb state={agentOrbState(step.agent)} className="-mx-[3px]" /> : <Check size={13} className="text-ok" />}
         </div>
       ))}
     </div>
@@ -178,43 +192,42 @@ function HitlCard({ message, onApprove, onDeny }: { message: Message; onApprove:
   if (!hitl) return null
   const details = hitlDetails(hitl)
   return (
-    <div
-      data-screen-label="HITL approval"
-      className="sb-rise mb-7 flex max-w-[640px] flex-col gap-3.5 rounded-[14px] border border-line2 bg-surface px-[22px] py-5 shadow-sb"
-    >
-      <div className="flex items-center gap-2 text-[13px] font-semibold">
-        <TriangleAlert size={15} className="text-warn" />
-        Agent wants to take an action
-      </div>
-      <p className="m-0 font-serif text-[20px] leading-[1.4] tracking-[-0.01em] text-pretty">{hitl.question ?? hitl.description ?? 'Approve this action?'}</p>
-      {hitl.tool && (
-        <div className="flex items-center gap-2 text-[12px] text-ink3">
-          Tool
-          <code className="rounded-md bg-bg1 px-[7px] py-0.5 font-mono text-[12px] font-medium text-ink">{hitl.tool}</code>
+    <Beam size="pulse-outside" tone="warn" className="sb-rise mb-7 max-w-[640px] shadow-sb">
+      <div data-screen-label="HITL approval" className="flex flex-col gap-3.5 rounded-[14px] border border-line2 bg-surface px-[22px] py-5">
+        <div className="flex items-center gap-2 text-[13px] font-semibold">
+          <TriangleAlert size={15} className="text-warn" />
+          Agent wants to take an action
         </div>
-      )}
-      {details && (
-        <pre className="m-0 max-h-60 overflow-auto rounded-[10px] bg-bg1 px-3.5 py-3 font-mono text-[12px] leading-[1.65] whitespace-pre-wrap text-ink2">
-          {details}
-        </pre>
-      )}
-      <div className="mt-0.5 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onDeny}
-          className="h-9 cursor-pointer rounded-[10px] border border-line2 bg-transparent px-4 text-[13px] font-semibold text-ink hover:bg-bg1"
-        >
-          Deny
-        </button>
-        <button
-          type="button"
-          onClick={onApprove}
-          className="h-9 cursor-pointer rounded-[10px] border-0 bg-acc px-[18px] text-[13px] font-semibold text-accink hover:brightness-110"
-        >
-          Approve
-        </button>
+        <p className="m-0 font-serif text-[20px] leading-[1.4] tracking-[-0.01em] text-pretty">{hitl.question ?? hitl.description ?? 'Approve this action?'}</p>
+        {hitl.tool && (
+          <div className="flex items-center gap-2 text-[12px] text-ink3">
+            Tool
+            <code className="rounded-md bg-bg1 px-[7px] py-0.5 font-mono text-[12px] font-medium text-ink">{hitl.tool}</code>
+          </div>
+        )}
+        {details && (
+          <pre className="m-0 max-h-60 overflow-auto rounded-[10px] bg-bg1 px-3.5 py-3 font-mono text-[12px] leading-[1.65] whitespace-pre-wrap text-ink2">
+            {details}
+          </pre>
+        )}
+        <div className="mt-0.5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onDeny}
+            className="h-9 cursor-pointer rounded-[10px] border border-line2 bg-transparent px-4 text-[13px] font-semibold text-ink hover:bg-bg1"
+          >
+            Deny
+          </button>
+          <button
+            type="button"
+            onClick={onApprove}
+            className="h-9 cursor-pointer rounded-[10px] border-0 bg-acc px-[18px] text-[13px] font-semibold text-accink hover:brightness-110"
+          >
+            Approve
+          </button>
+        </div>
       </div>
-    </div>
+    </Beam>
   )
 }
 
@@ -232,7 +245,11 @@ export function AssistantMessage({ message, hoverRef, onHoverRef, onCite, onAppr
 
   return (
     <div className="mb-12">
-      <StatusBar message={message} expanded={expanded} onToggle={() => setExpanded((v) => !v)} tight={tight} />
+      <div className="relative">
+        {/* Hangs in the column's left gutter so the status bar, trace and answer stay aligned. */}
+        {!tight && <AgentAvatar state={avatarState(message)} className="absolute top-[5px] -left-10" />}
+        <StatusBar message={message} expanded={expanded} onToggle={() => setExpanded((v) => !v)} tight={tight} />
+      </div>
       {expanded && <Trace message={message} />}
       <HitlCard message={message} onApprove={onApprove} onDeny={onDeny} />
       {message.hitlResult && <p className="-mt-2 mb-[22px] text-[12.5px] text-ink3">{message.hitlResult}</p>}
